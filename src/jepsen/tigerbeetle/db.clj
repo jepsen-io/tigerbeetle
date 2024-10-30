@@ -65,9 +65,10 @@
               (str (cn/ip node) ":" port)))
        (str/join ",")))
 
-(defrecord DB []
+(defrecord DB [tcpdump]
   db/DB
   (setup! [this test node]
+    (when (:tcpdump test) (db/setup! tcpdump test node))
     (install! test node)
     (configure! test node)
     (db/start! this test node)
@@ -75,11 +76,13 @@
 
   (teardown! [this test node]
     (c/su (db/kill! this test node)
-          (c/exec :rm :-rf dir)))
+          (c/exec :rm :-rf dir))
+    (when (:tcpdump test) (db/teardown! tcpdump test node)))
 
   db/LogFiles
   (log-files [_ test node]
-    {log-file "tigerbeetle.log"})
+    (merge (when (:tcpdump test) (db/log-files tcpdump test node))
+           {log-file "tigerbeetle.log"}))
 
   db/Pause
   (pause! [_ test node]
@@ -116,4 +119,5 @@
 (defn db
   "Constructs a new DB for the test, given CLI opts."
   [opts]
-  (DB.))
+  (map->DB {:tcpdump (db/tcpdump {:ports [port]})}))
+

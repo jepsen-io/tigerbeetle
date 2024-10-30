@@ -17,7 +17,8 @@
   (:require [clojure.core.match :refer [match]]
             [jepsen [checker :as checker]
                     [client :as client]
-                    [generator :as gen]]
+                    [generator :as gen]
+                    [util :refer [timeout]]]
             [jepsen.tigerbeetle.client :as c]
             [potemkin :refer [definterface+]]))
 
@@ -77,7 +78,7 @@
 (defrecord Client [conn]
   client/Client
   (open! [this test node]
-    (Client. (c/open node)))
+    (Client. (c/open test node)))
 
   (setup! [this test])
 

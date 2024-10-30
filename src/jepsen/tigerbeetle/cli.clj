@@ -74,7 +74,7 @@
 (defn test-name
   "Takes CLI options and constructs a test name as a string."
   [opts]
-  (str (:bin opts)
+  (str (:version opts)
        " " (name (:workload opts))))
 
 (defn tb-test
@@ -164,7 +164,7 @@
     :parse-fn read-string
     :validate [pos? "Must be a positive number."]]
 
-   ; [nil "--tcpdump" "Dumps traffic to a pcap file."]
+   [nil "--tcpdump" "Dumps traffic to a pcap file."]
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword

@@ -4,8 +4,10 @@
             [clojure.core.protocols :refer [Datafiable]]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
+            [jepsen [util :as util :refer [timeout]]]
             [jepsen.control.net :as cn]
-            [jepsen.tigerbeetle [core :refer [cluster-id port]]])
+            [jepsen.tigerbeetle [core :refer [cluster-id port]]]
+            [slingshot.slingshot :refer [try+ throw+]])
   (:import (com.tigerbeetle AccountFlags
                             AccountBatch
                             Client
@@ -147,10 +149,19 @@
 
 (defn open
   "Opens a client to the given node."
-  [node]
+  [test node]
   (Client. (UInt128/asBytes cluster-id)
-           ; Client can only take IP addresses, not hostnames
-           (into-array [(str (cn/ip node) ":" port)])))
+           ; Client can only take IP addresses, not hostnames. Clients also
+           ; *must* receive the full list of nodes. However, we want to ensure
+           ; that clients talk to a specific node, so we have a chance to see
+           ; when two nodes disagree. We give them fake ports for all but the
+           ; target node.
+           (->> (:nodes test)
+                (map (fn [some-node]
+                       (str (cn/ip some-node) ":" (if (= node some-node)
+                                                    port
+                                                    1))))
+                into-array)))
 
 (defn close!
   "Close a client"
@@ -160,4 +171,20 @@
 (defn create-accounts!
   "Takes a client and a vector of account maps."
   [^Client c, accounts]
-  (datafy (.createAccounts c (account-batch accounts))))
+  ; This will deadlock
+  (datafy (.createAccounts c (account-batch accounts)))
+  ; Doing this directly puts us into nonterminating/segfault territory
+  #_(timeout 5000 (throw+ {:type :timeout})
+           (datafy (.createAccounts c (account-batch accounts))))
+  ; We can also try the async version. This *also* segfaults on calls to
+  ; .close().
+  #_(let [f (.createAccountsAsync c (account-batch accounts))
+        _ (info "Called createAccountsAsync; asking for results")
+        r (deref f 60000 ::timeout)]
+    (info "Results are" r)
+    (if (identical? r ::timeout)
+      (do (info "Closing client due to timeout.")
+          (close! c)
+          (info "Client closed, throwing")
+          (throw+ {:type :timeout}))
+      r)))
