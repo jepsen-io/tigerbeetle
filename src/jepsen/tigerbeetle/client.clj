@@ -13,7 +13,8 @@
                             Client
                             CreateAccountResult
                             CreateAccountResultBatch
-                            UInt128)))
+                            UInt128)
+           (java.util Arrays)))
 
 ; Serialization
 
@@ -64,15 +65,16 @@
                   code
                   flags
                   timestamp] :as account} accounts]
-         (doto b
-           (.add)
-           (.setId (UInt128/asBytes id))
-           (.setUserData64 user-data)
-           (.setLedger ledger)
-           (.setCode code)
-           (.setFlags (flags->int flags))
-           ;(.setTimestamp timestamp))
-           )))
+         (recur
+           (doto b
+             (.add)
+             (.setId (UInt128/asBytes id))
+             (.setUserData64 user-data)
+             (.setLedger ledger)
+             (.setCode code)
+             (.setFlags (flags->int flags))
+             ;(.setTimestamp timestamp))
+             ))))
 
 ; Deserialization
 
@@ -112,6 +114,9 @@
 (extend-protocol Datafiable
   AccountBatch
   (datafy [b]
+    ; Seek to beginning, just in case someone else read this already
+    (info "request batch has" (.getLength b) "elements")
+    (.beforeFirst b)
     (loop [accounts (transient [])]
       (if-not (.next b)
         ; End of batch
@@ -126,17 +131,7 @@
                        :credits-pending (.getCreditsPending b)
                        :credits-posted  (.getCreditsPosted b)
                        :debits-pending  (.getDebitsPending b)
-                       :debits-posted   (.getDebitsPosted b)})))))
-
-  CreateAccountResultBatch
-  (datafy [b]
-    (info "batch has" (.getLength b) "elements")
-    (loop [results (transient [])]
-      (if-not (.next b)
-        ; End of batch
-        (persistent! results)
-        (recur (conj! results (create-account-result->clj (.getResult b))))))))
-
+                       :debits-posted   (.getDebitsPosted b)}))))))
 
 ; Helpers
 
@@ -168,11 +163,39 @@
   [^Client client]
   (.close client))
 
+(defn create-account-result-batch->clj
+  "Converts a CreateAccountResultBatch to a Clojure vector. Also takes the
+  request responsible for producing this response. Since result batches only
+  contain errors, this fills in OK results for those operations that succeeded
+  OK."
+  [^AccountBatch req, ^CreateAccountResultBatch res]
+  ; Rewind just in case
+  (.beforeFirst res)
+  ; So the response batch is not, as the request docs say, 1:1 with the request
+  ; batch. It only includes errors! We construct a vector with OK elements for
+  ; anything in the request *not* in the results. We'll use an array cuz it has
+  ; a convenient fill method.
+  (let [n   (.getLength req)
+        ary (object-array n)]
+    (Arrays/fill ary :ok)
+    (loop []
+      (if-not (.next res)
+        ; End of batch; return vector
+        (vec ary)
+        (do (aset ary
+                  (.getIndex res)
+                  (create-account-result->clj (.getResult res)))
+            (recur))))))
+
 (defn create-accounts!
   "Takes a client and a vector of account maps."
   [^Client c, accounts]
+  ;(info "submitting" (datafy (account-batch accounts)))
   ; This will deadlock
-  (datafy (.createAccounts c (account-batch accounts)))
+  (let [req (account-batch accounts)]
+    (create-account-result-batch->clj
+      req
+      (.createAccounts c req)))
   ; Doing this directly puts us into nonterminating/segfault territory
   #_(timeout 5000 (throw+ {:type :timeout})
            (datafy (.createAccounts c (account-batch accounts))))
