@@ -13,12 +13,14 @@
             [jepsen.control.scp :as scp]
             [jepsen.tigerbeetle [db :as db]
                                 [nemesis :as nemesis]]
+            [jepsen.tigerbeetle.workload [transfer :as transfer]]
             [jepsen.os.debian :as debian]))
 
 (def workloads
   "A map of workload names to functions that take CLI options and return
   workload maps"
-  {:none           (constantly tests/noop-test)})
+  {:none           (constantly tests/noop-test)
+   :transfer       transfer/workload})
 
 (def all-workloads
   "All the workloads we run by default."
@@ -166,7 +168,7 @@
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword
-    :default  :none
+    :default  :transfer
     :missing  (str "Must specify a workload: " (cli/one-of workloads))
     :validate [workloads (cli/one-of workloads)]]
    ])

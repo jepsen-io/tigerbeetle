@@ -7,6 +7,7 @@
                     [util :refer [meh]]]
             [jepsen.control [net :as cn]
                             [util :as cu]]
+            [jepsen.tigerbeetle [core :refer [cluster-id port]]]
             [slingshot.slingshot :refer [try+ throw+]]))
 
 (def dir "The top-level directory."
@@ -27,10 +28,6 @@
 (def pid-file
   "Where we write the process' pidfile"
   (str dir "/tigerbeetle.pid"))
-
-(def cluster-id
-  "The TigerBeetle cluster ID"
-  0)
 
 (def cache-grid-size
   "TigerBeetle's cache grid size"
@@ -65,7 +62,7 @@
   [test]
   (->> (:nodes test)
        (map (fn [node]
-              (str (cn/ip node) ":3001")))
+              (str (cn/ip node) ":" port)))
        (str/join ",")))
 
 (defrecord DB []
