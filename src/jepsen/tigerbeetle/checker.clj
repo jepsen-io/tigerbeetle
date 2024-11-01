@@ -232,6 +232,8 @@
        (h/filter op/ok)
        (sort-by :timestamp)))
 
+(defn 
+
 (defn analysis
   "Analyzes a history, gluing together all the various data structures we
   need."
@@ -245,4 +247,5 @@
         seen-transfers (h/task history seen-transfers []
                                (seen-transfers history))
         resolved-history (h/task history resolve-ops [sa seen-accounts
-                                                      st seen-transfers])]))
+                                                      st seen-transfers])
+        ]))
