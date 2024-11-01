@@ -7,13 +7,82 @@
 
   Our operations are:
 
-  {:type  :invoke
-   :f     :create-accounts
-   :value [account1 account2 ...]}
+  ## Create an account
 
-  {:type :ok
-   :f    :create-accounts
-   :value [:ok :linked-event-failed ...]"
+    {:type  :invoke
+     :f     :create-accounts
+     :value [account1 account2 ...]}
+
+    {:type      :ok
+     :f         :create-accounts
+     :value     [:ok :linked-event-failed ...]
+     :timestamp 123}
+
+  ## Create a transfer
+
+    {:type  :invoke
+     :f     :create-transfers
+     :value [transfer1 transfer2 ...]}
+
+    {:type  :ok
+     :f     :create-transfers
+     :value [:ok :linked-event-failed ...]
+     :timestamp 123}
+
+  ## Fetch several transfers matching an account filter
+
+    {:type :invoke
+     :f    :get-account-transfers
+     :value account-filter1}
+
+    {:type  :ok
+     :f     :get-account-transfers
+     :value [transfer1 transfer2 ...]}
+
+  ## Look up a accounts by IDs
+
+    {:type    :invoke
+     :f       :lookup-accounts
+     :value   [id1 id2 id3 ...]}
+
+    {:type      :ok
+     :f         :lookup-accounts
+     :value     [account1, nil, account3, ...]
+     :timestamp 123}
+
+  ## Look up transfers by IDs
+
+    {:type    :invoke
+     :f       :lookup-transfers
+     :value   [id1 id2 ...]}
+
+    {:type    :ok
+     :f       :lookup-transfers
+     :value   [transfer1 transfer2 ...]}
+
+  ## Query accounts matching a QueryFilter
+
+    {:type :invoke
+     :f    :query-accounts
+     :value query-filter}
+
+    {:type :ok
+     :f    :query-accounts
+     :value [account1 account2 ...]}
+
+  ## Query transfers matching a QueryFilter
+
+    {:type  :invoke
+     :f     :query-transfers
+     :value query-filter}
+
+    {:type :ok
+     :f    :query-transfers
+     :value [transfer1 transfer2 ...]}
+
+  During the final read phase, we switch exclusively to :f
+  :final-lookup-accounts and :f :final-lookup-transfers, whose semantics are
+  otherwise identical to lookup-accounts/lookup-transfers."
   (:require [clojure.core.match :refer [match]]
             [jepsen [checker :as checker]
                     [client :as client]
