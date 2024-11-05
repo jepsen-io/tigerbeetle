@@ -117,4 +117,29 @@
                           :linked-event-failed
                           :ok])]
       (is (= {4N a4'} (datafy (:accounts model))))))
+
+  (testing "diff flags"
+    (let [model (ca-step init0
+                         [a1 (update a1 :flags conj :closed)]
+                         [:ok :exists-with-different-flags])]
+      (is (= {1N a1'} (datafy (:accounts model))))))
+
+  (testing "diff user-data-128"
+    (let [model (ca-step init0
+                         [a1 (assoc a1 :user-data 2N)]
+                         [:ok :exists-with-different-user-data-128])]
+      (is (= {1N a1'} (datafy (:accounts model))))))
+
+  (testing "diff user-ledger"
+    (let [model (ca-step init0
+                         [a1 (assoc a1 :ledger 2)]
+                         [:ok :exists-with-different-ledger])]
+      (is (= {1N a1'} (datafy (:accounts model))))))
+
+  (testing "diff code"
+    (let [model (ca-step init0
+                         [a1 (assoc a1 :code 2)]
+                         [:ok :exists-with-different-code])]
+      (is (= {1N a1'} (datafy (:accounts model))))))
+
   )
