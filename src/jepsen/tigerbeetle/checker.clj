@@ -66,7 +66,9 @@
                           [set :as bs]]
             [dom-top.core :refer [loopr]]
             [jepsen [history :as h]]
-            [tesser.core :as t]))
+            [tesser.core :as t])
+  (:import (jepsen.history Op)))
+
 
 (t/deftransform bset
   "A Tesser transform that builds a Bifurcan set of all elements."
@@ -82,6 +84,7 @@
 (t/deftransform bset-union
   "A Tesser transform that builds a Bifurcan set which is the union of all
   Bifurcan set inputs."
+  []
   (assert (nil? downstream))
   {:reducer-identity  (comp b/linear bs/set)
    :reducer           bs/union
@@ -130,7 +133,7 @@
        (t/filter (h/has-f? #{:get-account-transfers
                              :lookup-transfers
                              :query-transfers}))
-       (t/map ids-in)
+       (t/map op->ids)
        bset-union
        (h/tesser history)))
 
@@ -140,7 +143,7 @@
   [history]
   (->> (t/filter h/ok?)
        (t/filter (h/has-f? #{:lookup-accounts :query-accounts}))
-       (t/map ids-in)
+       (t/map op->ids)
        bset-union
        (h/tesser history)))
 
@@ -156,7 +159,8 @@
            ids (b/linear (bs/set))]
       (if (= i n)
         (b/forked ids)
-        (recur (if (identical? :ok (nth results i))
+        (recur (inc i)
+               (if (identical? :ok (nth results i))
                  (bs/add ids (:id (nth events i)))
                  ids))))))
 
@@ -186,7 +190,7 @@
   "Takes a history, a set of OK account ids and OK transfer ids, and a single
   operation of type :info. Returns true if any of the operation's effects were
   in the OK accounts/transfers."
-  [ok-accounts ok-transfers op]
+  [history ok-accounts ok-transfers op]
   (assert (h/info? op))
   (if-let [; What set are we going to look in?
            ok-ids (case (:f op)
@@ -215,7 +219,7 @@
   :fail based on presence in ok-accounts or ok-transfers. We construct a new
   history in which no writes are :info, and also a collection of atomicity
   errors when some but not all of an operation's writes occur."
-  {:keys [history ok-accounts ok-transfers]}
+  [{:keys [history ok-accounts ok-transfers]}]
   ; TODO: precompile this as a bitset
   (h/map (fn [op]
            (if (identical? (:type op) :info)
@@ -229,10 +233,8 @@
   sorted by :timestamp ascending."
   [history]
   (->> history
-       (h/filter op/ok)
+       h/oks
        (sort-by :timestamp)))
-
-(defn 
 
 (defn analysis
   "Analyzes a history, gluing together all the various data structures we

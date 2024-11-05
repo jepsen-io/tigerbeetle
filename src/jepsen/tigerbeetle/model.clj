@@ -18,10 +18,16 @@
   (:require [bifurcan-clj [core :as b]
                           [list :as bl]
                           [map :as bm]
-                          [set :as bs]]
+                          [set :as bs]
+                          [util :refer [iterable=]]]
+            [clojure [datafy :refer [datafy]]]
+            [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
             [jepsen.history :as h]
-            [potemkin :refer [definterface+]]))
+            [potemkin :refer [definterface+]])
+  (:import (java.util Arrays)
+           (jepsen.history Op)
+           (io.lacuna.bifurcan IMap)))
 
 (definterface+ IModel
   (step [this invoke ok]
@@ -30,15 +36,17 @@
 
 (defrecord Inconsistent [message]
   IModel
-  (step [this invoke ok] this)
-
-  Object
-  (toString [this] (pr-str message)))
+  (step [this invoke ok] this))
 
 (defn inconsistent
   "Represents inconsistent termination of a model."
   [message]
   (Inconsistent. message))
+
+(defn inconsistent?
+  "Is this model inconsistent?"
+  [model]
+  (instance? Inconsistent model))
 
 (definterface+ ITB
   (advance-timestamp [model timestamp]
@@ -54,6 +62,11 @@
                   "Actually adds an account to a model, returning the new
                   model.")
 
+  (create-accounts-chain [model accounts import?]
+                         "Creates a series of accounts in a single chain. All
+                         operations succeed or fail as a unit. Returns
+                         [model', results].")
+
   (create-accounts [model invoke ok]
                    "Applies a single create-accounts operation to the model,
                    returning model'"))
@@ -66,13 +79,28 @@
   "2^128 - 1"
   340282366920938463463374607431768211455N)
 
+(defn chains
+  "Takes a vector of events and partitions it into a vector of linked chains,
+  each chain a vector of events."
+  [events]
+  (let [n (count events)]
+    (loop [i       0 ; Starting index of the chain
+           j       0 ; Ending index of the chain]
+           chains (transient [])]
+      (if (= i n)
+        (persistent! chains)
+        (let [j' (inc j)]
+          (if (:linked (:flags (nth events j)))
+            (recur i  j' chains)
+            (recur j' j' (conj! chains (subvec events i j')))))))))
+
 (defrecord TB
   [; A pair of maps of account/transfer ID to timestamp, derived from the
    ; observed history. We use these to advance time synthetically throughout
    ; the simulation.
    account-id->timestamp
    transfer-id->timestamp
-   timestamp ; Our internal timestamp
+   ^long timestamp ; Our internal timestamp
    accounts  ; A map of account IDs to accounts
    transfers ; A map of transfer IDs to transfers
    ]
@@ -81,24 +109,24 @@
   (advance-timestamp [this ts]
     (if (< timestamp ts)
       (assoc this :timestamp ts)
-      (invalid {:type :nonmonotonic-timestamp
-                :timestamp  timestamp
-                :timestamp' ts})))
+      (inconsistent {:type :nonmonotonic-timestamp
+                     :timestamp  timestamp
+                     :timestamp' ts})))
 
   (create-account-result [this account import?]
     (let [id     (:id account)
           extant (bm/get accounts id)]
       (cond
-        (and import? (not (:import (:flags account))))
+        (and import? (not (:imported (:flags account))))
         :imported-event-expected
 
-        (and (not import?) (:import (:flags account)))
+        (and (not import?) (:imported (:flags account)))
         :imported-event-not-expected
 
-        (and (not import?) (not (zero? (:timestamp account))))
+        (and (not import?) (not (zero? (:timestamp account 0))))
         :timestamp-must-be-zero
 
-        (and import? (not (< 0 (:timestamp account) timestamp-upper-bound)))
+        (and import? (not (< 0 (:timestamp account 0) timestamp-upper-bound)))
         :imported-event-timestamp-out-of-range
 
         (and import? (< timestamp (:timestamp account)))
@@ -157,55 +185,75 @@
   (create-account [this account]
     ; What timestamp did the actual system assign this account?
     (let [ts      (bm/get account-id->timestamp (:id account))
-          account (assoc account :timestamp ts)]
-      ; Advance our clock and store the account
-      (-> this
-          (advance-timestamp ts)
-          (assoc :accounts (bm/put accounts (:id account) account)))))
+          account (assoc account :timestamp ts)
+          ; Advance our clock to the new account
+          this' (advance-timestamp this ts)]
+      (if (inconsistent? this')
+        this'
+        ; Good, we were able to advance to this time. Add the account.
+        (assoc this' :accounts (bm/put accounts (:id account) account)))))
+
+  (create-accounts-chain [this accounts import?]
+    ; Note that *every* response to creating a chain of accounts is either
+    ; entirely :ok, or entirely :linked-event-failed with the exception of a
+    ; single error.
+    (let [results (object-array (count accounts))]
+      (loopr [i       0
+              this'   this]
+             [account accounts]
+             (let [result (create-account-result this account import?)]
+               (if (= :ok result)
+                 (recur (inc i)
+                        (create-account this' account))
+                 ; Failed! Early return time
+                 (do (Arrays/fill results :linked-event-failed)
+                     (aset results i result)
+                     [this (bl/from-array results)])))
+             ; Completed successfully
+             (do (Arrays/fill results :ok)
+                 [this' (bl/from-array results)]))))
 
   (create-accounts [this invoke ok]
     (let [accounts (:value invoke)
-          results  (:value ok)
+          actual   (:value ok)
           ; Are we doing a batch import?
           import? (when-let [a (first accounts)]
                     (contains? (:flags a) :imported))]
-      ; Zip through accounts/results, adding each in turn
-      (loop [this this      ; The model
-             i    0         ; The index of the event we're processing
-             ; The index of the first event in this chain. Nil if not in chain.
-             first-chain-i nil
-             ; Has this chain already failed?
-             chain-failed? false]
-        (if (= i n)
-          this ; Done
-          ; Process account
-          (let [account  (nth accounts i)
-                result   (nth results i)
-                ; What result do we expect from adding this account?
-                expected (if chain-failed?
-                           :linked-event-failed
-                           (create-account-result this account import?))
-                ; Did we start a chain?
-                linked?    (:linked (:flags account))
-                new-chain? (and linked? (nil? first-chain-i))
-                ; If we did start a new chain, record where we started
-                first-chain-i (if new-chain? i first-chain-i)
-                ; Chain failure state resets every time a chain is completed
-                chain-failed? (if linked? chain-failed? false)]
-            (cond
-              ; Our chain has failed.
-              chain-failed?
-              ; HERE I GUESS
-
-              ; This is fine. Go ahead and add it.
-              (= expected match)
-              (recur (create-account this account)
-                     (inc i)
-
-
+      ; Zip through chains, applying each
+      (loopr [this      this                 ; The model
+              results   (b/linear bl/empty)] ; Our results List
+             [chain (chains accounts)]
+             ; Apply this chain
+             (let [[this chain-results] (create-accounts-chain
+                                          this chain import?)]
+               (recur this (bl/concat results chain-results)))
+             ; Done applying chains. Validate.
+             (if (iterable= results actual)
+               this
+               (inconsistent
+                 {:type     :results-mismatch
+                  :op       invoke
+                  :op'      ok
+                  :expected (datafy results)
+                  :actual   actual
+                  ;:model    this
+                  })))))
 
   IModel
-  (step [this, ^Op invoke, ^Op ok]
+  (step [this invoke ok]
         (case (:f invoke)
           :create-accounts
-          (create-accounts this invoke ok)))))
+          (create-accounts this invoke ok))))
+
+(defn init
+  "Constructs an initial model state. Takes two Bifurcan maps of account ID ->
+  timestamp and transfer ID -> timestamp."
+  [{:keys [account-id->timestamp
+           transfer-id->timestamp]}]
+  (assert (instance? IMap account-id->timestamp))
+  (assert (instance? IMap transfer-id->timestamp))
+  (map->TB {:account-id->timestamp account-id->timestamp
+            :transfer-id->timestamp transfer-id->timestamp
+            :timestamp -1
+            :accounts  bm/empty
+            :transfers bm/empty}))
