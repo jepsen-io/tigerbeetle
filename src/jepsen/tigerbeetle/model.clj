@@ -20,9 +20,10 @@
                           [map :as bm]
                           [set :as bs]
                           [util :refer [iterable=]]]
-            [clojure [datafy :refer [datafy]]]
+            [clojure [datafy :refer [datafy]]
+                     [pprint :refer [pprint]]]
             [clojure.tools.logging :refer [info warn]]
-            [dom-top.core :refer [loopr]]
+            [dom-top.core :refer [letr loopr]]
             [jepsen.history :as h]
             [potemkin :refer [definterface+]])
   (:import (java.util Arrays)
@@ -58,18 +59,35 @@
                          "Computes the result code of adding this account to
                          the given model. Does not actually add it.")
 
+  (create-transfer-result [model transfer import?]
+                          "Computes the result code of adding this transfer to
+                          the given model. Does not actually add it.")
+
   (create-account [model account]
                   "Actually adds an account to a model, returning the new
                   model.")
+
+  (create-transfer [model account]
+                   "Actually adds a transfer to a model, returning the new
+                   model.")
 
   (create-accounts-chain [model accounts import?]
                          "Creates a series of accounts in a single chain. All
                          operations succeed or fail as a unit. Returns
                          [model', results].")
 
+  (create-transfers-chain [model transfers import?]
+                          "Creates a series of transfers in a single chain. All
+                          operations succeed or fail as a unit. Returns
+                          [model', results']")
+
   (create-accounts [model invoke ok]
                    "Applies a single create-accounts operation to the model,
                    returning model'")
+
+  (create-transfers [model invoke ok]
+                    "Applies a single create-transfers operation to the model,
+                    returning model'")
 
   (read-account [model id]
                 "Reads an account by ID, returning account or nil.")
@@ -122,6 +140,71 @@
           ; Equal all the way
           nil)))))
 
+(defn create-chain
+  "Shared logic for creating a single chain of accounts or transfers. Takes a
+  model, a list of events, whether this is an import or not, and a pair of
+  functions:
+
+  (create-result this event import)
+  (create this event)
+
+  which compute the result if we *were* to create that event, and actually
+  add it to the model, respectively. Returns a tuple of [model'
+  expected-results] from applying this particular chain."
+  [model events import? create-result create]
+  ; Note that *every* response to creating a chain of accounts is either
+  ; entirely :ok, or entirely :linked-event-failed with the exception of a
+  ; single error.
+  (let [results (object-array (count events))]
+    (loopr [i       0
+            model'   model]
+           [event events]
+           (let [result (create-result model' event import?)]
+             (if (= :ok result)
+               (recur (inc i)
+                      (create model' event))
+               ; Failed! Early return time
+               (do (Arrays/fill results :linked-event-failed)
+                   (aset results i result)
+                   [model (bl/from-array results)])))
+           ; Completed successfully
+           (do (Arrays/fill results :ok)
+               [model' (bl/from-array results)]))))
+
+(defn create-helper
+  "Common logic for create-transfers and create-accounts. Takes a model, an
+  invoke, an OK, a function (create-chain model chain import?) which applies
+  a single chain of events to the model, and a name (e.g. :account) for what
+  we call a single event, used in the error map. Returns model'."
+  [this invoke ok create-chain event-name]
+  (let [events (:value invoke)
+        actual (:value ok)
+        ; Are we doing a batch import?
+        import? (when-let [t (first events)]
+                  (contains? (:flags t) :imported))]
+    ; Zip through chains, applying each
+    (loopr [this    this                 ; The model
+            results (b/linear bl/empty)] ; Our expected results list
+           ; TODO: we have to figure out how to handle linked-event-chain-open
+           [chain (chains events)]
+           ; Apply this chain
+           (let [[this chain-results] (create-chain
+                                        this chain import?)]
+             (if (inconsistent? this)
+               this
+               (recur this (bl/concat results chain-results))))
+           ; Done applying chains. Validate.
+           (if-let [i (first-not=-index results actual)]
+             (inconsistent
+               {:type      :model
+                :op        invoke
+                :op'       ok
+                event-name (nth events i)
+                :expected  (b/nth results i)
+                :actual    (nth actual i)})
+             ; OK!
+             this))))
+
 (defrecord TB
   [; A pair of maps of account/transfer ID to timestamp, derived from the
    ; observed history. We use these to advance time synthetically throughout
@@ -145,6 +228,7 @@
     (let [id     (:id account)
           extant (bm/get accounts id)]
       (cond
+        ; See https://docs.tigerbeetle.com/reference/requests/create_accounts#result
         (and import? (not (:imported (:flags account))))
         :imported-event-expected
 
@@ -210,63 +294,85 @@
         true
         :ok)))
 
+  (create-transfer-result [this transfer import?]
+    ; See https://docs.tigerbeetle.com/reference/requests/create_transfers
+    (letr [{:keys [id
+                   flags
+                   credit-account-id
+                   debit-account-id
+                   amount]} transfer
+           extant (bm/get transfers id)
+           _ (when (and import? (not (:imported flags)))
+               (return :imported-event-expected))
+           _ (when (and (not import?) (:imported flags))
+               (return :imported-event-not-expected))
+           _ (when (and (not import?) (not (zero? (:timestamp transfer 0))))
+               (return :timestamp-must-be-zero))
+
+           debit-account (or (bm/get accounts debit-account-id)
+                             (return :debit-account-not-found))
+           credit-account (or (bm/get accounts credit-account-id)
+                              (return :credit-account-not-found))
+
+           ledger (:ledger credit-account)
+           _ (when (not= ledger (:ledger debit-account))
+               (return :accounts-must-have-the-same-ledger))
+           _ (when (not= ledger (:ledger transfer))
+               (return :transfer-must-have-the-same-ledger-as-accounts))]
+      :ok))
+
   (create-account [this account]
     ; What timestamp did the actual system assign this account?
-    (let [ts      (bm/get account-id->timestamp (:id account))
-          account (assoc account :timestamp ts)
-          ; Advance our clock to the new account
+    (let [id      (:id account)
+          ts      (bm/get account-id->timestamp id)
+          _       (assert ts (str "No timestamp known for account " id))
+          account (assoc account
+                         :credits-pending 0N
+                         :credits-posted 0N
+                         :debits-pending 0N
+                         :debits-posted 0N
+                         :timestamp ts)
+          ; Advance our clock to the new timestamp
           this' (advance-timestamp this ts)]
       (if (inconsistent? this')
-        this'
-        ; Good, we were able to advance to this time. Add the account.
-        (assoc this' :accounts (bm/put accounts (:id account) account)))))
+        this' ; Oops!
+        (assoc this' :accounts (bm/put accounts id account)))))
+
+  (create-transfer [this transfer]
+    ; What timestamp did the actual system assign this transfer?
+    (letr [{:keys [id debit-account-id credit-account-id amount]} transfer
+          ts (bm/get transfer-id->timestamp id)
+          _  (assert ts (str "No timestamp known for transfer " id))
+          ; Fill in transfer
+          transfer (assoc transfer
+                          :timestamp ts)
+          ; Advance our clock to the new timestamp
+          this' (advance-timestamp this ts)
+          _ (when (inconsistent? this')
+              ; Clock nonmonotonic!
+              (return this'))
+          ; Update accounts
+          accounts' (bm/update accounts debit-account-id
+                               update :debits-posted + amount)
+          accounts' (bm/update accounts' credit-account-id
+                               update :credits-posted + amount)
+          transfers' (bm/put transfers id transfer)]
+      (assoc this'
+             :accounts accounts'
+             :transfers transfers')))
 
   (create-accounts-chain [this accounts import?]
-    ; Note that *every* response to creating a chain of accounts is either
-    ; entirely :ok, or entirely :linked-event-failed with the exception of a
-    ; single error.
-    (let [results (object-array (count accounts))]
-      (loopr [i       0
-              this'   this]
-             [account accounts]
-             (let [result (create-account-result this account import?)]
-               (if (= :ok result)
-                 (recur (inc i)
-                        (create-account this' account))
-                 ; Failed! Early return time
-                 (do (Arrays/fill results :linked-event-failed)
-                     (aset results i result)
-                     [this (bl/from-array results)])))
-             ; Completed successfully
-             (do (Arrays/fill results :ok)
-                 [this' (bl/from-array results)]))))
+    (create-chain this accounts import? create-account-result create-account))
+
+  (create-transfers-chain [this transfers import?]
+    (create-chain this transfers import?
+                  create-transfer-result create-transfer))
 
   (create-accounts [this invoke ok]
-    (let [accounts (:value invoke)
-          actual   (:value ok)
-          ; Are we doing a batch import?
-          import? (when-let [a (first accounts)]
-                    (contains? (:flags a) :imported))]
-      ; Zip through chains, applying each
-      (loopr [this      this                 ; The model
-              results   (b/linear bl/empty)] ; Our results List
-             [chain (chains accounts)]
-             ; Apply this chain
-             (let [[this chain-results] (create-accounts-chain
-                                          this chain import?)]
-               (recur this (bl/concat results chain-results)))
-             ; Done applying chains. Validate.
-             (if-let [i (first-not=-index results actual)]
-               (inconsistent
-                 {:type     :model
-                  :op       invoke
-                  :op'      ok
-                  :account  (nth accounts i)
-                  :expected (b/nth results i)
-                  :actual   (nth actual i)
-                  ;:model    this
-                  })
-               this))))
+    (create-helper this invoke ok create-accounts-chain :account))
+
+  (create-transfers [this invoke ok]
+    (create-helper this invoke ok create-transfers-chain :transfer))
 
   (read-account [this id]
     ; TODO: compute balances
@@ -295,8 +401,9 @@
   IModel
   (step [this invoke ok]
         (case (:f invoke)
-          :create-accounts (create-accounts this invoke ok)
-          :lookup-accounts (lookup-accounts this invoke ok)
+          :create-accounts  (create-accounts this invoke ok)
+          :create-transfers (create-transfers this invoke ok)
+          :lookup-accounts  (lookup-accounts this invoke ok)
         )))
 
 (defn init

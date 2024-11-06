@@ -29,9 +29,14 @@
 
 ; Events with their timestamps
 (defn ats
-  "Account timestamp. Stamps an account with its timestamp from the timestamp map."
+  "Account timestamp. Stamps an account with its timestamp from the timestamp map, and initial balances."
   [a]
-  (assoc a :timestamp (bm/get tsm (:id a))))
+  (assoc a
+         :timestamp       (bm/get tsm (:id a))
+         :credits-pending 0N
+         :credits-posted  0N
+         :debits-pending  0N
+         :debits-posted   0N))
 
 (def a1' (ats a1))
 (def a2' (ats a2))
@@ -92,4 +97,21 @@
                     :account  a2
                     :expected :ok
                     :actual   :ledger-must-not-be-zero}}
+           r))))
+
+(deftest lookup-accounts-model-test
+  (let [h (h/history
+            [(o 0 0 :invoke :create-accounts [a1 a2])
+             (o 1 0 :ok     :create-accounts [:ok :ok] 101)
+             (o 2 1 :invoke :lookup-accounts [1N 2N])
+             ; An improper read!
+             (o 3 1 :ok     :lookup-accounts [a1' (assoc a2' :ledger 1)] 200)])
+        r (check h)]
+    (is (= {:valid? false
+            :error-types #{:model}
+            :model {:op       (h 2)
+                    :op'      (h 3)
+                    :id       2N
+                    :expected a2'
+                    :actual   (assoc a2' :ledger 1)}}
            r))))
