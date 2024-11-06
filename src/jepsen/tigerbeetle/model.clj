@@ -69,6 +69,13 @@
 
   (create-accounts [model invoke ok]
                    "Applies a single create-accounts operation to the model,
+                   returning model'")
+
+  (read-account [model id]
+                "Reads an account by ID, returning account or nil.")
+
+  (lookup-accounts [model invoke ok]
+                   "Applies a single lookup-accounts operation to the model,
                    returning model'"))
 
 (def timestamp-upper-bound
@@ -93,6 +100,27 @@
           (if (:linked (:flags (nth events j)))
             (recur i  j' chains)
             (recur j' j' (conj! chains (subvec events i j')))))))))
+
+(defn first-not=-index
+  "Takes two iterables and returns the index of the first mismatch between
+  them, or nil if no mismatch."
+  [^Iterable a, ^Iterable b]
+  (let [a (.iterator a)
+        b (.iterator b)]
+    (loop [i 0]
+      (if (.hasNext a)
+        (if (.hasNext b)
+          (if (= (.next a) (.next b))
+            (recur (inc i))
+            i)
+          ; More as, no more bs
+          i)
+        ; Done
+        (if (.hasNext b)
+          ; No more as, more bs
+          i
+          ; Equal all the way
+          nil)))))
 
 (defrecord TB
   [; A pair of maps of account/transfer ID to timestamp, derived from the
@@ -228,22 +256,48 @@
                                           this chain import?)]
                (recur this (bl/concat results chain-results)))
              ; Done applying chains. Validate.
-             (if (iterable= results actual)
-               this
+             (if-let [i (first-not=-index results actual)]
                (inconsistent
-                 {:type     :results-mismatch
+                 {:type     :model
                   :op       invoke
                   :op'      ok
-                  :expected (datafy results)
-                  :actual   actual
+                  :account  (nth accounts i)
+                  :expected (b/nth results i)
+                  :actual   (nth actual i)
                   ;:model    this
-                  })))))
+                  })
+               this))))
+
+  (read-account [this id]
+    ; TODO: compute balances
+    (bm/get accounts id))
+
+  (lookup-accounts [this invoke ok]
+    (let [ids    (:value invoke)
+          actual (:value ok)
+          n      (count ids)]
+      (loop [i 0]
+        (if (= i n)
+          this
+          (let [id       (nth ids i)
+                actual   (nth actual i)
+                expected (read-account this id)]
+            (if (= expected actual)
+              (recur (inc i))
+              (inconsistent
+                {:type :model
+                 :op        invoke
+                 :op'       ok
+                 :id        id
+                 :expected  expected
+                 :actual    actual})))))))
 
   IModel
   (step [this invoke ok]
         (case (:f invoke)
-          :create-accounts
-          (create-accounts this invoke ok))))
+          :create-accounts (create-accounts this invoke ok)
+          :lookup-accounts (lookup-accounts this invoke ok)
+        )))
 
 (defn init
   "Constructs an initial model state. Takes two Bifurcan maps of account ID ->

@@ -66,6 +66,7 @@
                           [set :as bs]]
             [dom-top.core :refer [loopr]]
             [jepsen [history :as h]]
+            [jepsen.tigerbeetle [model :as model]]
             [tesser.core :as t])
   (:import (jepsen.history Op)))
 
@@ -93,6 +94,19 @@
    :combiner          bs/union
    :post-combiner     b/forked})
 
+(t/deftransform bmap-merge
+  "A Tesser transform that builds a Bifurcan map which is merged from all input
+  maps."
+  []
+  (assert (nil? downstream))
+  {:reducer-identity (comp b/linear bm/map)
+   ; TODO: confirm all values are identical
+   :reducer          bm/merge
+   :post-reducer     identity
+   :combiner-identity (comp b/linear bm/map)
+   :combiner         bm/merge
+   :post-combiner    b/forked})
+
 (defn first-final-read
   "Takes a history. Returns the offset of the first final read."
   [history]
@@ -116,6 +130,37 @@
              (if (nil? (nth values i))
                s
                (bs/add s (nth ids i)))))))
+
+(defn op->id->timestamp-map
+  "Takes a single Operation whose :value is a collection of things (e.g.
+  accounts) with :id and :timestamp fields. Returns a map of id->timestamp."
+  [op]
+  (loopr [m (b/linear bm/empty)]
+         [event (:value op)]
+         (recur (bm/put m (:id event) (:timestamp event)))
+         (b/forked m)))
+
+(defn account-id->timestamp
+  "Takes a history. Computes a map of account IDs to timestamps for all
+  observed accounts."
+  [history]
+  (->> (t/filter h/ok?)
+       (t/filter (h/has-f? #{:lookup-accounts :query-accounts}))
+       (t/map op->id->timestamp-map)
+       bmap-merge
+       (h/tesser history)))
+
+(defn transfer-id->timestamp
+  "Takes a history. Computes a map of transfer IDs to timestamps for all
+  observed transfers."
+  [history]
+  (->> (t/filter h/ok?)
+       (t/filter (h/has-f? #{:get-account-transfers
+                             :lookup-transfers
+                             :query-transfers}))
+       (t/map op->id->timestamp-map)
+       bmap-merge
+       (h/tesser history)))
 
 (defn op->ids
   "Takes an Operation and returns a Bifurcan Set of all IDs in it."
@@ -226,7 +271,8 @@
              (assoc op :type (if (op-actually-ok? ok-accounts ok-transfers op)
                                :ok
                                :fail))
-             op))))
+             op))
+         history))
 
 (defn timestamp-sorted
   "Takes a history. Returns a sequence of all OK operations in the history
@@ -236,6 +282,28 @@
        h/oks
        (sort-by :timestamp)))
 
+(defn model-check
+  "Checks a sequence of OK operations from a history using our model checker.
+  Returns an error map, or nil if no errors were found."
+  [{:keys [history
+           account-id->timestamp
+           transfer-id->timestamp]
+    :as opts}]
+  (let [oks (timestamp-sorted history)
+        n   (count oks)]
+    (loopr [model (model/init
+                    (select-keys opts [:account-id->timestamp
+                                       :transfer-id->timestamp]))]
+           [op' oks]
+           (let [op     (h/invocation history op')
+                 model  (model/step model op op')]
+             (if (model/inconsistent? model)
+               (let [err (:message model)]
+                 {(:type err) (dissoc err :type)})
+               (recur model)))
+           ; OK
+           nil)))
+
 (defn analysis
   "Analyzes a history, gluing together all the various data structures we
   need."
@@ -244,10 +312,35 @@
         ;                         (created-accounts history))
         ;created-transfers (h/task history created-transfers []
         ;                          (created-transfers history))
+        account-id->timestamp (h/task history account-id->timestamp []
+                                      (account-id->timestamp history))
+        transfer-id->timestamp (h/task history transfer-id->timestamp []
+                                      (transfer-id->timestamp history))
         seen-accounts  (h/task history seen-accounts []
                                (seen-accounts history))
         seen-transfers (h/task history seen-transfers []
                                (seen-transfers history))
         resolved-history (h/task history resolve-ops [sa seen-accounts
-                                                      st seen-transfers])
-        ]))
+                                                      st seen-transfers]
+                                 (resolve-ops {:history history
+                                               :seen-accounts sa
+                                               :seen-transfers st}))
+        model-check (h/task history model-check [h resolved-history
+                                                 ait account-id->timestamp
+                                                 tit transfer-id->timestamp]
+                            (model-check {:history h
+                                          :account-id->timestamp ait
+                                          :transfer-id->timestamp tit}))
+        ; Build error map
+        errors (merge (sorted-map)
+                      @model-check)
+        ]
+    (merge errors
+           {:error-types (into (sorted-set) (keys errors))})))
+
+(defn check
+  "Checks a history, returning a map with statistics and errors."
+  [history]
+  (let [a (analysis history)]
+    (-> a
+        (assoc :valid? (empty? (:error-types a))))))

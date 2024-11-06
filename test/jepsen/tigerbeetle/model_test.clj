@@ -99,11 +99,12 @@
           op  {:f :create-accounts, :value [a1 a2]}
           ; But we insist both were OK
           op' {:f :create-accounts, :value [:ok :ok]}]
-      (is (= (inconsistent {:type :results-mismatch
-                            :op op
-                            :op' op'
-                            :expected [:imported-event-timestamp-out-of-range :imported-event-expected]
-                            :actual   [:ok :ok]})
+      (is (= (inconsistent {:type     :model
+                            :op       op
+                            :op'      op'
+                            :account  a1
+                            :expected :imported-event-timestamp-out-of-range
+                            :actual   :ok})
              (step init0 op op')))))
 
   (testing "linked chains"
