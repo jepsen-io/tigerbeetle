@@ -85,19 +85,27 @@
           (recur (inc i)
                  (assoc! events i event)))))))
 
+(defn step*
+  "Shorthand for any kind of step."
+  [f model invoke-val ok-val]
+  (step model
+        {:f f :value invoke-val}
+        {:f f :value ok-val}))
+
 (defn ca-step
   "Shorthand for a create-accounts step."
   [model invoke-val ok-val]
-  (step model
-        {:f :create-accounts, :value invoke-val}
-        {:f :create-accounts, :value ok-val}))
+  (step* :create-accounts model invoke-val ok-val))
 
 (defn ct-step
   "Shorthand for a create-transfers step"
   [model invoke-val ok-val]
-  (step model
-        {:f :create-transfers, :value invoke-val}
-        {:f :create-transfers, :value ok-val}))
+  (step* :create-transfers model invoke-val ok-val))
+
+(defn la-step
+  "Shorthand for a lookup-accounts step."
+  [model invoke-val ok-val]
+  (step* :lookup-accounts model invoke-val ok-val))
 
 (deftest create-accounts-test
   (testing "empty"
@@ -185,7 +193,15 @@
         t2 (t 2N a2 a1 15N)
         model (-> init0
                   (ca-step [a1 a2] [:ok :ok])
-                  (ct-step [t1 t2] [:ok :ok]))]
+                  (ct-step [t1 t2] [:ok :ok])
+                  ; And a read of each
+                  (la-step [1N 2N]
+                           [(assoc a1'
+                                   :credits-posted 15N
+                                   :debits-posted 5N)
+                            (assoc a2'
+                                   :credits-posted 5N
+                                   :debits-posted 15N)]))]
     (is (not (inconsistent? model)))
     (is (= {1N (assoc a1'
                       :credits-posted 15N
@@ -223,4 +239,3 @@
         (is (not (inconsistent? model')))
         ; t2 should have executed, but not t1
         (is (= #{2N} (set (bm/keys (:transfers model')))))))))
-
