@@ -47,15 +47,17 @@
 
 (defn t
   "Build a simple transfer. From and to can be IDs or account maps."
-  [i from to amount]
-  {:id                (bigint i)
-   :debit-account-id  (if (map? from) (:id from) from)
-   :credit-account-id (if (map? to) (:id to) to)
-   :amount            (bigint amount)
-   :user-data         i
-   :ledger            1
-   :code              i
-   :flags             #{}})
+  ([i from to amount]
+   (t i from to amount #{}))
+  ([i from to amount flags]
+   {:id                (bigint i)
+    :debit-account-id  (if (map? from) (:id from) from)
+    :credit-account-id (if (map? to) (:id to) to)
+    :amount            (bigint amount)
+    :user-data         i
+    :ledger            1
+    :code              i
+    :flags             flags}))
 
 (def ttsm
   "A simple map of ID->timestamp for transfers"
@@ -106,6 +108,11 @@
   "Shorthand for a lookup-accounts step."
   [model invoke-val ok-val]
   (step* :lookup-accounts model invoke-val ok-val))
+
+(defn consistent?
+  "Not inconsistent?"
+  [model]
+  (not (inconsistent? model)))
 
 (deftest create-accounts-test
   (testing "empty"
@@ -224,18 +231,52 @@
                     [:debit-account-not-found
                      :credit-account-not-found])))))
 
-(deftest create-transfer-import-test
+(deftest transfer-import-test
   ; Ensure all events are imports or none are
   (let [t1 (update (t 1N a1 a2 5N) :flags conj :imported)
         t2 (t 2N a2 a1 5N)
         model (ca-step init0 [a1 a2] [:ok :ok])]
     (testing "import first"
       (let [model' (ct-step model [t1 t2] [:ok :imported-event-expected])]
-        (is (not (inconsistent? model')))
+        (is (consistent? model'))
         ; t1 should have executed, but t2 nope
         (is (= #{1N} (set (bm/keys (:transfers model')))))))
     (testing "import second"
       (let [model' (ct-step model [t2 t1] [:ok :imported-event-not-expected])]
-        (is (not (inconsistent? model')))
+        (is (consistent? model'))
         ; t2 should have executed, but not t1
         (is (= #{2N} (set (bm/keys (:transfers model')))))))))
+
+(deftest two-phase-transfer-test
+  ; Perform a pending transfer, then post or void it.
+  (let [pending (t 1N a1 a2 10N #{:pending})
+        ; We only post 5 of the 10 pending
+        post    (assoc (t 2N 0N 0N 5N #{:post-pending-transfer})
+                       :pending-id 1N)
+        void    (assoc (t 3N 0N 0N 0N #{:void-pending-transfer})
+                       :pending-id 1N)
+        model   (ca-step init0 [a1 a2] [:ok :ok])]
+    (testing "pending"
+      (let [m (ct-step model [pending] [:ok])]
+        ; Both should have pending but not posted balances
+        (is (consistent? m))
+        (is (= {1N (assoc a1' :debits-pending 10N)
+                2N (assoc a2' :credits-pending 10N)}
+               (datafy (:accounts m))))))
+    (testing "post"
+      (let [m (ct-step model [pending post] [:ok :ok])]
+        ; Balances should now have moved to posted
+        (is (consistent? m))
+        (is (= {1N (assoc a1' :debits-posted 5N)
+                2N (assoc a2' :credits-posted 5N)}
+               (datafy (:accounts m))))))
+    (testing "void"
+      (let [m (ct-step model [pending void] [:ok :ok])]
+        ; Balances should remain at 0
+        (is (consistent? m))
+        (is (= {1N a1'
+                2N a2'}
+               (datafy (:accounts m))))
+        (is (= {1N (tts pending)
+                3N (tts void)}
+               (datafy (:transfers m))))))))

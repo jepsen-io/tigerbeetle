@@ -205,6 +205,44 @@
              ; OK!
              this))))
 
+(defn transfer-update-account
+  "Called to update a single account for a transfer. Take an account, a mode
+  (:debit or :credit), an amount, and the transfer flags."
+  [account mode pending-amount amount flags]
+  (assert account)
+  (case mode
+    :debit
+    (cond
+      (:pending flags)
+      (update account :debits-pending + amount)
+
+      (:post-pending-transfer flags)
+      (-> account
+          (update :debits-pending - pending-amount)
+          (update :debits-posted + amount))
+
+      (:void-pending-transfer flags)
+      (update account :debits-pending - pending-amount)
+
+      true
+      (update account :debits-posted + amount))
+
+    :credit
+    (cond
+      (:pending flags)
+      (update account :credits-pending + amount)
+
+      (:post-pending-transfer flags)
+      (-> account
+          (update :credits-pending - pending-amount)
+          (update :credits-posted + amount))
+
+      (:void-pending-transfer flags)
+      (update account :credits-pending - pending-amount)
+
+      true
+      (update account :credits-posted + amount))))
+
 (defrecord TB
   [; A pair of maps of account/transfer ID to timestamp, derived from the
    ; observed history. We use these to advance time synthetically throughout
@@ -296,11 +334,12 @@
 
   (create-transfer-result [this transfer import?]
     ; See https://docs.tigerbeetle.com/reference/requests/create_transfers
+    ; TODO: this is incomplete; we have to go through the whole list of errors
+    ; and test them all
     (letr [{:keys [id
                    flags
                    credit-account-id
-                   debit-account-id
-                   amount]} transfer
+                   debit-account-id]} transfer
            extant (bm/get transfers id)
            _ (when (and import? (not (:imported flags)))
                (return :imported-event-expected))
@@ -309,10 +348,49 @@
            _ (when (and (not import?) (not (zero? (:timestamp transfer 0))))
                (return :timestamp-must-be-zero))
 
-           debit-account (or (bm/get accounts debit-account-id)
-                             (return :debit-account-not-found))
+           ledger (:ledger transfer)
+           amount (:amount transfer)
+           code   (:code transfer)
+
+           ; The whole post/void dance
+           pending-id (:pending-id transfer)
+           pending    (when pending-id
+                        (or (bm/get transfers pending-id)
+                            (return :pending-transfer-not-found)))
+           _ (when pending
+               (letr [_ (when (not (:pending (:flags pending)))
+                          (return :pending-transfer-not-pending))
+                      _ (when (and (not= credit-account-id 0)
+                                   (not= credit-account-id
+                                         (:credit-account-id pending)))
+                          (return :pending-transfer-has-different-credit-account-id))
+                      _ (when (and (not= debit-account-id 0)
+                                   (not= debit-account-id
+                                         (:debit-account-id pending)))
+                          (return :pending-transfer-has-different-debit-account-id))
+                      _ (when (and (not= ledger 0)
+                                   (not= ledger (:ledger pending)))
+                          (return :pending-transfer-has-different-ledger))
+                      _ (when (and (not= code 0)
+                                   (not= code (:code pending)))
+                          (return :pending-transfer-has-different-code))
+                      _ (when (< (:amount pending) amount)
+                          (return :exceeds-pending-transfer-amount))
+                      void? (:void-pending-transfer flags)
+                      _ (when (and void?
+                                   (not= amount 0N)
+                                   (not= amount (:amount pending)))
+                          (return :pending-transfer-has-different-amount))]))
+
+           ; Fetch accounts
+           credit-account-id (or (:credit-account-id pending)
+                                 credit-account-id)
+           debit-account-id (or (:debit-account-id pending)
+                                debit-account-id)
            credit-account (or (bm/get accounts credit-account-id)
                               (return :credit-account-not-found))
+           debit-account (or (bm/get accounts debit-account-id)
+                             (return :debit-account-not-found))
 
            ledger (:ledger credit-account)
            _ (when (not= ledger (:ledger debit-account))
@@ -340,7 +418,7 @@
 
   (create-transfer [this transfer]
     ; What timestamp did the actual system assign this transfer?
-    (letr [{:keys [id debit-account-id credit-account-id amount]} transfer
+    (letr [{:keys [id amount flags]} transfer
           ts (bm/get transfer-id->timestamp id)
           _  (assert ts (str "No timestamp known for transfer " id))
           ; Fill in transfer
@@ -351,12 +429,33 @@
           _ (when (inconsistent? this')
               ; Clock nonmonotonic!
               (return this'))
+
+          ; What accounts are we interacting with?
+          pending-id (:pending-id transfer)
+          pending    (when pending-id
+                       (bm/get transfers pending-id))
+          credit-account-id (or (:credit-account-id pending)
+                                (:credit-account-id transfer))
+          debit-account-id (or (:debit-account-id pending)
+                               (:debit-account-id transfer))
+
+          ; Record transfer
+          transfers' (bm/put transfers id transfer)
           ; Update accounts
-          accounts' (bm/update accounts debit-account-id
-                               update :debits-posted + amount)
-          accounts' (bm/update accounts' credit-account-id
-                               update :credits-posted + amount)
-          transfers' (bm/put transfers id transfer)]
+          accounts'
+          (-> accounts
+              (bm/update debit-account-id
+                         transfer-update-account
+                         :debit
+                         (:amount pending)
+                         amount
+                         flags)
+              (bm/update credit-account-id
+                         transfer-update-account
+                         :credit
+                         (:amount pending)
+                         amount
+                         flags))]
       (assoc this'
              :accounts accounts'
              :transfers transfers')))
