@@ -396,7 +396,24 @@
            _ (when (not= ledger (:ledger debit-account))
                (return :accounts-must-have-the-same-ledger))
            _ (when (not= ledger (:ledger transfer))
-               (return :transfer-must-have-the-same-ledger-as-accounts))]
+               (return :transfer-must-have-the-same-ledger-as-accounts))
+
+           ; Balance constraints
+           credit-flags (:flags credit-account)
+           debit-flags  (:flags debit-account)
+           _ (when (and (:credits-must-not-exceed-debits credit-flags)
+                        (< (:debits-posted credit-account)
+                           (+ (:credits-pending credit-account)
+                              (:credits-posted credit-account)
+                              amount)))
+               (return :exceeds-debits))
+           _ (when (and (:debits-must-not-exceed-credits debit-flags)
+                        (< (:credits-posted debit-account)
+                           (+ (:debits-pending debit-account)
+                              (:debits-posted debit-account)
+                              amount)))
+               (return :exceeds-credits))
+           ]
       :ok))
 
   (create-account [this account]

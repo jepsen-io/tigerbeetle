@@ -280,3 +280,31 @@
         (is (= {1N (tts pending)
                 3N (tts void)}
                (datafy (:transfers m))))))))
+
+(deftest exceeds-credits-test
+  (let [a1 (update a1 :flags conj :debits-must-not-exceed-credits)]
+    (is (consistent?
+          (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              ; We can credit a1, and debit it up to posted+pending, but no further
+              (ct-step [(t 1N a2 a1 10N)
+                        (t 2N a2 a1 5N #{:pending})
+                        ; a1 now has 10 posted, 5 pending
+                        (t 3N a1 a2 5N)
+                        (t 4N a1 a2 5N #{:pending})
+                        (t 5N a1 a2 5N)]
+                       [:ok :ok :ok :ok :exceeds-credits]))))))
+
+(deftest exceeds-debits-test
+  (let [a1 (update a1 :flags conj :credits-must-not-exceed-debits)]
+    (is (consistent?
+          (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              ; We can debit a1, and credit it up to posted+pending, but no further
+              (ct-step [(t 1N a1 a2 10N)
+                        (t 2N a1 a2 5N #{:pending})
+                        ; a1 now has 10 posted, 5 pending
+                        (t 3N a2 a1 5N)
+                        (t 4N a2 a1 5N #{:pending})
+                        (t 5N a2 a1 5N)]
+                       [:ok :ok :ok :ok :exceeds-debits]))))))
