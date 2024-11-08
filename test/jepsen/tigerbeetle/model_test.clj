@@ -21,6 +21,7 @@
 (def a2 (a 2))
 (def a3 (a 3))
 (def a4 (a 4))
+(def a5 (a 5))
 
 (def atsm
   "A simple map of ID->timestamp"
@@ -42,6 +43,7 @@
 (def a2' (ats a2))
 (def a3' (ats a3))
 (def a4' (ats a4))
+(def a5' (ats a5))
 
 ; And some transfers
 
@@ -156,8 +158,8 @@
               (is (= {} (datafy (:transfers model)))))]))
 
   (testing "nonmonotonic"
-    (is (= (inconsistent {:type :nonmonotonic-timestamp
-                          :timestamp 102
+    (is (= (inconsistent {:type :nonmonotonic-account-timestamp
+                          :account-timestamp 102
                           :timestamp' 101})
            (ca-step init0 [a2 a1] [:ok :ok]))))
 
@@ -212,7 +214,7 @@
                          [:ok :exists-with-different-code])]
       (is (= {1N a1'} (datafy (:accounts model)))))))
 
-(deftest ^:focus create-account-linked-event-chain-open-test
+(deftest create-account-linked-event-chain-open-test
   ; If we leave an account chain open, it should explode.
   (is (consistent?
         (ca-step init0
@@ -220,6 +222,27 @@
                   (assoc a2 :flags #{:linked})]
                  [:linked-event-failed
                   :linked-event-chain-open]))))
+
+(deftest create-account-timestamp-must-be-zero-test
+  ; Creating an event with a nonzero timestamp is bad
+  (is (consistent?
+        (ca-step init0
+                 [(assoc a1 :timestamp 5)]
+                 [:timestamp-must-be-zero]))))
+
+(deftest create-account-imported-event-timestamp-out-of-range-test
+  ; Imported timestamps need to be between 0 and 2^63
+  (is (consistent?
+        (ca-step ; We need a far-future clock for this one
+                 (assoc init0 :timestamp Long/MAX_VALUE)
+                 [(assoc a1 :timestamp 0 :flags #{:imported})
+                  (assoc a2 :timestamp 1 :flags #{:imported})
+                  (assoc a3 :timestamp Long/MAX_VALUE :flags #{:imported})
+                  (assoc a4 :timestamp (inc (bigint Long/MAX_VALUE)):flags #{:imported})]
+                 [:imported-event-timestamp-out-of-range
+                  :ok
+                  :ok
+                  :imported-event-timestamp-out-of-range]))))
 
 (deftest basic-transfer-test
   ; We transfer 5 from 1->2, and 15 from 2->1. No special flags.

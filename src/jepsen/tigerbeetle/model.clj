@@ -50,10 +50,16 @@
   (instance? Inconsistent model))
 
 (definterface+ ITB
-  (advance-timestamp [model timestamp]
+  (advance-timestamp [model ^long timestamp]
                      "Advances the internal timestamp of this model to
                      `timestamp`. Constructs an invalid state if the timestamp
                      is not strictly monotonic.")
+
+  (advance-account-timestamp [model ^long timestamp]
+                             "Advances the account-specific timestamp.")
+
+  (advance-transfer-timestamp [model ^long timestamp]
+                              "Advances the transfer-specific timestamp.")
 
   (create-account [model account import?]
                   "Adds an account to a model, returning the new model if ok,
@@ -268,7 +274,9 @@
    ; the simulation.
    account-id->timestamp
    transfer-id->timestamp
-   ^long timestamp ; Our internal timestamp
+   ^long timestamp          ; Our internal timestamp
+   ^long account-timestamp  ; The last account timestamp created
+   ^long transfer-timestamp ; The last transfer timestamp created
    accounts  ; A map of account IDs to accounts
    transfers ; A map of transfer IDs to transfers
    ]
@@ -281,15 +289,30 @@
                      :timestamp  timestamp
                      :timestamp' ts})))
 
+  (advance-account-timestamp [this ts]
+    (if (< account-timestamp ts)
+      (assoc this :account-timestamp ts)
+      (inconsistent {:type :nonmonotonic-account-timestamp
+                     :account-timestamp account-timestamp
+                     :timestamp' ts})))
+
+  (advance-transfer-timestamp [this ts]
+    (if (< transfer-timestamp ts)
+      (assoc this :transfer-timestamp ts)
+      (inconsistent {:type :nonmonotonic-transfer-timestamp
+                     :transfer-timestamp transfer-timestamp
+                     :timestamp' ts})))
+
   (create-account [this account import?]
     (let [id     (:id account)
-          extant (bm/get accounts id)]
+          extant (bm/get accounts id)
+          flags  (:flags account)]
       (cond
         ; See https://docs.tigerbeetle.com/reference/requests/create_accounts#result
-        (and import? (not (:imported (:flags account))))
+        (and import? (not (:imported flags)))
         :imported-event-expected
 
-        (and (not import?) (:imported (:flags account)))
+        (and (not import?) (:imported flags))
         :imported-event-not-expected
 
         (and (not import?) (not (zero? (:timestamp account 0))))
@@ -313,7 +336,7 @@
 
         extant
         (cond
-          (not= (:flags extant) (:flags account))
+          (not= (:flags extant) flags)
           :exists-with-different-flags
 
           ; We don't do 64/32, just 128
@@ -329,8 +352,8 @@
           true
           :exists)
 
-        (and (:debits-must-not-exceed-credits (:flags account))
-             (:credits-must-not-exceed-debits (:flags account)))
+        (and (:debits-must-not-exceed-credits flags)
+             (:credits-must-not-exceed-debits flags))
         :flags-are-mutually-exclusive
 
         (when-let [p (:debits-pending account)] (not = 0 p))
@@ -352,11 +375,14 @@
         ; OK, go! What timestamp did the actual system assign this account?
         (letr [ts      (bm/get account-id->timestamp id)
                _       (assert ts (str "No timestamp known for account " id))
-               ; Advance our clock to the new timestamp
-               this' (advance-timestamp this ts)
-               _ (when (inconsistent? this')
-                   ; Timestamp error
-                   (return this'))
+               ; Advance clocks to the new timestamp
+               this' (advance-account-timestamp this ts)
+               _     (when (inconsistent? this') (return this'))
+               this' (if (:imported flags)
+                       this'
+                       (advance-timestamp this' ts))
+               _     (when (inconsistent? this') (return this'))
+               ; Record account
                account (assoc account
                               :credits-pending 0N
                               :credits-posted 0N
@@ -461,11 +487,13 @@
           {:keys [id amount flags]} transfer
           ts (bm/get transfer-id->timestamp id)
           _  (assert ts (str "No timestamp known for transfer " id))
-          ; Advance our clock to the new timestamp
-          this' (advance-timestamp this ts)
-          _ (when (inconsistent? this')
-              ; Clock nonmonotonic!
-              (return this'))
+          ; Advance our clocks to the new timestamp
+          this' (advance-transfer-timestamp this ts)
+          _     (when (inconsistent? this') (return this'))
+          this' (if (:imported flags)
+                  this'
+                  (advance-timestamp this' ts))
+          _     (when (inconsistent? this') (return this'))
 
           ; Fill in transfer
           transfer (assoc transfer
@@ -547,5 +575,7 @@
   (map->TB {:account-id->timestamp account-id->timestamp
             :transfer-id->timestamp transfer-id->timestamp
             :timestamp -1
+            :account-timestamp -1
+            :transfer-timestamp -1
             :accounts  bm/empty
             :transfers bm/empty}))
