@@ -304,15 +304,16 @@
                      :timestamp' ts})))
 
   (create-account [this account import?]
-    (let [id     (:id account)
-          extant (bm/get accounts id)
-          flags  (:flags account)]
+    (let [id        (:id account)
+          extant    (bm/get accounts id)
+          flags     (:flags account)
+          imported? (:imported flags)]
       (cond
         ; See https://docs.tigerbeetle.com/reference/requests/create_accounts#result
-        (and import? (not (:imported flags)))
+        (and import? (not imported?))
         :imported-event-expected
 
-        (and (not import?) (:imported flags))
+        (and (not import?) imported?)
         :imported-event-not-expected
 
         (and (not import?) (not (zero? (:timestamp account 0))))
@@ -373,12 +374,14 @@
 
         true
         ; OK, go! What timestamp did the actual system assign this account?
-        (letr [ts      (bm/get account-id->timestamp id)
+        (letr [ts      (if imported?
+                         (:timestamp account)
+                         (bm/get account-id->timestamp id))
                _       (assert ts (str "No timestamp known for account " id))
                ; Advance clocks to the new timestamp
                this' (advance-account-timestamp this ts)
                _     (when (inconsistent? this') (return this'))
-               this' (if (:imported flags)
+               this' (if imported?
                        this'
                        (advance-timestamp this' ts))
                _     (when (inconsistent? this') (return this'))
@@ -400,12 +403,15 @@
                    credit-account-id
                    debit-account-id]} transfer
            extant (bm/get transfers id)
-           _ (when (and import? (not (:imported flags)))
+           imported? (:imported flags)
+           _ (when (and import? (not imported?))
                (return :imported-event-expected))
-           _ (when (and (not import?) (:imported flags))
+           _ (when (and (not import?) imported?)
                (return :imported-event-not-expected))
            _ (when (and (not import?) (not (zero? (:timestamp transfer 0))))
                (return :timestamp-must-be-zero))
+           _ (when (and import? (< timestamp (:timestamp transfer)))
+               (return :imported-event-timestamp-must-not-advance))
 
            ledger (:ledger transfer)
            amount (:amount transfer)
@@ -485,12 +491,14 @@
           ; OK, we're good to go.
           ; What timestamp did the actual system assign this transfer?
           {:keys [id amount flags]} transfer
-          ts (bm/get transfer-id->timestamp id)
+          ts (if imported?
+               (:timestamp transfer)
+               (bm/get transfer-id->timestamp id))
           _  (assert ts (str "No timestamp known for transfer " id))
           ; Advance our clocks to the new timestamp
           this' (advance-transfer-timestamp this ts)
           _     (when (inconsistent? this') (return this'))
-          this' (if (:imported flags)
+          this' (if imported?
                   this'
                   (advance-timestamp this' ts))
           _     (when (inconsistent? this') (return this'))

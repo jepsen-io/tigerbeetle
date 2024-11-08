@@ -244,6 +244,20 @@
                   :ok
                   :imported-event-timestamp-out-of-range]))))
 
+(deftest create-account-imported-event-timestamp-must-not-advance-test
+  ; Imported timestamps have to rise
+  (let [m (ca-step (assoc init0 :timestamp 5)
+                   [(assoc a1 :timestamp 3 :flags #{:imported})
+                    ; Should you be allowed to do this? Feels a little weird
+                    (assoc a2 :timestamp 5 :flags #{:imported})
+                    (assoc a2 :timestamp 6 :flags #{:imported})]
+                   [:ok
+                    :ok
+                    :imported-event-timestamp-must-not-advance])]
+    (is (consistent? m))
+    (is (= 5 (:timestamp m)))
+    (is (= 5 (:account-timestamp m)))))
+
 (deftest basic-transfer-test
   ; We transfer 5 from 1->2, and 15 from 2->1. No special flags.
   (let [t1 (t 1N a1 a2 5N)
@@ -283,7 +297,9 @@
 
 (deftest transfer-import-test
   ; Ensure all events are imports or none are
-  (let [t1 (update (t 1N a1 a2 5N) :flags conj :imported)
+  (let [t1 (assoc (t 1N a1 a2 5N)
+                  :timestamp 1N
+                  :flags #{:imported})
         t2 (t 2N a2 a1 5N)
         model (ca-step init0 [a1 a2] [:ok :ok])]
     (testing "import first"
@@ -454,3 +470,16 @@
                 3N (assoc (tts pending)
                           :amount 4N)}
                (datafy (:transfers m))))))))
+
+(deftest create-transfer-imported-event-timestamp-must-not-advance-test
+  ; Imported timestamps have to rise
+  (let [t1 (assoc (t 1N a1 a2 5N #{:imported}) :timestamp 3)
+        t2 (assoc (t 1N a1 a2 5N #{:imported}) :timestamp 1000)
+        m (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              (ct-step [t1 t2]
+                       [:ok :imported-event-timestamp-must-not-advance]))]
+    (is (consistent? m))
+    (is (= 102 (:timestamp m))) ; From the accounts
+    (is (= 102 (:account-timestamp m)))
+    (is (= 3   (:transfer-timestamp m)))))
