@@ -104,8 +104,13 @@
     (loop [i       0 ; Starting index of the chain
            j       0 ; Ending index of the chain]
            chains (transient [])]
-      (if (= i n)
-        (persistent! chains)
+      (if (= j n)
+        ; Done
+        (if (< i j)
+          ; Unfinished chain. We'll catch this later.
+          (persistent! (conj! chains (subvec events i j)))
+          ; All set.
+          (persistent! chains))
         (let [j' (inc j)]
           (if (:linked (:flags (nth events j)))
             (recur i  j' chains)
@@ -132,23 +137,35 @@
           ; Equal all the way
           nil)))))
 
+(defn fill-list
+  "Constructs a Bifurcan list of n elements of x."
+  [n x]
+  (let [a (object-array n)]
+    (Arrays/fill a x)
+    (bl/from-array a)))
+
 (defn create-chain
   "Shared logic for creating a single chain of accounts or transfers. Takes a
-  model, a list of events, whether this is an import or not, and a function
-  `(create this event)` which returns either a new model state (either
-  inconsistent, or implicitly an :ok result), or an error keyword.
+  model, a function to create a single event in a model, a list of events,
+  and whether this is an import or not. The function `(create this event
+  import?)` returns either a new model state (either inconsistent, or
+  implicitly an :ok result), or an error keyword.
 
   Returns a tuple of [model' expected-results] from applying this particular
   chain."
-  [model events import? create]
+  [model create events import?]
   ; Note that *every* response to creating a chain of accounts is either
   ; entirely :ok, or entirely :linked-event-failed with the exception of a
   ; single error.
-  (let [results (object-array (count events))]
+  (let [n       (count events)
+        results (object-array n)]
     (loopr [i       0
             model'   model]
            [event events]
-           (let [result (create model' event import?)]
+           (let [result (if (and (= i (dec n))
+                                 (:linked (:flags event)))
+                          :linked-event-chain-open
+                          (create model' event import?))]
              (cond
                ; Logical error; fail chain and return model unchanged.
                (keyword? result)
@@ -167,39 +184,45 @@
            (do (Arrays/fill results :ok)
                [model' (bl/from-array results)]))))
 
+(defn validate
+  "Takes a model, an invoke, an OK, an event name (e.g. :transfer or :event), a
+  vector of events, a Bifurcan list of expected results, and a vector of actual
+  results. Returns model if the results match, or an inconsistent state."
+  [model invoke ok event-name events expected actual]
+  (if-let [i (first-not=-index expected actual)]
+    (inconsistent
+      {:type      :model
+       :op        invoke
+       :op'       ok
+       event-name (nth events i)
+       :expected  (b/nth expected i)
+       :actual    (nth actual i)})
+    model))
+
 (defn create-helper
   "Common logic for create-transfers and create-accounts. Takes a model, an
-  invoke, an OK, a function (create-chain model chain import?) which applies
-  a single chain of events to the model, and a name (e.g. :account) for what
-  we call a single event, used in the error map. Returns model'."
+  invoke, an OK, a function (create-chain model chain import?)
+  which applies a single chain of events to the model, and a name (e.g.
+  :account) for what we call a single event, used in the error map. Returns
+  model'."
   [this invoke ok create-chain event-name]
   (let [events (:value invoke)
         actual (:value ok)
+        n      (count events)
         ; Are we doing a batch import?
         import? (when-let [t (first events)]
                   (contains? (:flags t) :imported))]
     ; Zip through chains, applying each
-    (loopr [this    this                 ; The model
-            results (b/linear bl/empty)] ; Our expected results list
-           ; TODO: we have to figure out how to handle linked-event-chain-open
+    (loopr [this     this                 ; The model
+            expected (b/linear bl/empty)] ; Our expected results list
            [chain (chains events)]
            ; Apply this chain
-           (let [[this chain-results] (create-chain
-                                        this chain import?)]
+           (let [[this chain-results] (create-chain this chain import?)]
              (if (inconsistent? this)
                this
-               (recur this (bl/concat results chain-results))))
-           ; Done applying chains. Validate.
-           (if-let [i (first-not=-index results actual)]
-             (inconsistent
-               {:type      :model
-                :op        invoke
-                :op'       ok
-                event-name (nth events i)
-                :expected  (b/nth results i)
-                :actual    (nth actual i)})
-             ; OK!
-             this))))
+               (recur this (bl/concat expected chain-results))))
+           ; Done applying chains.
+           (validate this invoke ok event-name events expected actual))))
 
 (defn transfer-update-account
   "Called to update a single account for a transfer. Take an account, a mode
@@ -471,10 +494,10 @@
              :transfers transfers')))
 
   (create-accounts-chain [this accounts import?]
-    (create-chain this accounts import? create-account))
+    (create-chain this create-account accounts import?))
 
   (create-transfers-chain [this transfers import?]
-    (create-chain this transfers import? create-transfer))
+    (create-chain this create-transfer transfers import?))
 
   (create-accounts [this invoke ok]
     (create-helper this invoke ok create-accounts-chain :account))

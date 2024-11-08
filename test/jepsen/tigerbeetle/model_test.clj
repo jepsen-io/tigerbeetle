@@ -5,7 +5,7 @@
                      [pprint :refer [pprint]]
                      [test :refer :all]]
             [jepsen [history :as h]]
-            [jepsen.tigerbeetle [model :refer :all]]))
+            [jepsen.tigerbeetle [model :as m :refer :all]]))
 
 (defn a
   "Build a simple account."
@@ -114,6 +114,24 @@
   [model]
   (not (inconsistent? model)))
 
+(deftest chains-test
+  (testing "empty"
+    (is (= [] (chains []))))
+  (testing "normal"
+    (is (= [[1N] [2N 3N] [4N]]
+           (map (partial map :id)
+                (chains
+                  [a1
+                   (assoc a2 :flags #{:linked})
+                   a3
+                   a4])))))
+  (testing "trailing"
+    (is (= [[1N] [2N 3N]]
+           (map (partial map :id)
+                (chains [a1
+                         (assoc a2 :flags #{:linked})
+                         (assoc a3 :flags #{:linked})]))))))
+
 (deftest create-accounts-test
   (testing "empty"
     (is (= init0
@@ -193,6 +211,15 @@
                          [a1 (assoc a1 :code 2)]
                          [:ok :exists-with-different-code])]
       (is (= {1N a1'} (datafy (:accounts model)))))))
+
+(deftest ^:focus create-account-linked-event-chain-open-test
+  ; If we leave an account chain open, it should explode.
+  (is (consistent?
+        (ca-step init0
+                 [(assoc a1 :flags #{:linked})
+                  (assoc a2 :flags #{:linked})]
+                 [:linked-event-failed
+                  :linked-event-chain-open]))))
 
 (deftest basic-transfer-test
   ; We transfer 5 from 1->2, and 15 from 2->1. No special flags.

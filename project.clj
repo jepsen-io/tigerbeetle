@@ -14,4 +14,7 @@
              ;"-XX:-OmitStackTraceInFastThrow"
              "-Djava.awt.headless=true"
              "-Xmx24g"
-             ])
+             ]
+  :test-selectors {:default (fn [m] true)
+                   :all     (fn [m] true)
+                   :focus   :focus})
