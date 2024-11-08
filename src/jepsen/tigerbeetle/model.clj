@@ -307,7 +307,8 @@
     (let [id        (:id account)
           extant    (bm/get accounts id)
           flags     (:flags account)
-          imported? (:imported flags)]
+          imported? (:imported flags)
+          atimestamp (:timestamp account 0)]
       (cond
         ; See https://docs.tigerbeetle.com/reference/requests/create_accounts#result
         (and import? (not imported?))
@@ -316,14 +317,17 @@
         (and (not import?) imported?)
         :imported-event-not-expected
 
-        (and (not import?) (not (zero? (:timestamp account 0))))
+        (and (not import?) (not (zero? atimestamp)))
         :timestamp-must-be-zero
 
-        (and import? (not (< 0 (:timestamp account 0) timestamp-upper-bound)))
+        (and import? (not (< 0 atimestamp timestamp-upper-bound)))
         :imported-event-timestamp-out-of-range
 
-        (and import? (< timestamp (:timestamp account)))
+        (and import? (< timestamp atimestamp))
         :imported-event-timestamp-must-not-advance
+
+        (and import? (<= atimestamp account-timestamp))
+        :imported-event-timestamp-must-not-regress
 
         ; TODO: we don't presently represent these
         ; :reserved-field
@@ -357,7 +361,7 @@
              (:credits-must-not-exceed-debits flags))
         :flags-are-mutually-exclusive
 
-        (when-let [p (:debits-pending account)] (not = 0 p))
+        (when-let [p (:debits-pending account)] (not= 0 p))
         :debits-pending-must-be-zero
 
         (when-let [p (:debits-posted account)] (not= 0 p))
@@ -371,6 +375,9 @@
 
         (= 0 (:ledger account))
         :ledger-must-not-be-zero
+
+        (= 0 (:code account))
+        :code-must-not-be-zero
 
         true
         ; OK, go! What timestamp did the actual system assign this account?

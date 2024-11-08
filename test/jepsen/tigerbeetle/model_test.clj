@@ -258,6 +258,91 @@
     (is (= 5 (:timestamp m)))
     (is (= 5 (:account-timestamp m)))))
 
+(deftest create-account-id-must-not-be-zero-test
+  (is (consistent?
+        (ca-step init0
+                 [(assoc a1 :id 0)]
+                 [:id-must-not-be-zero]))))
+
+(deftest create-account-id-must-not-be-int-max
+  (is (consistent?
+        (ca-step init0
+                 [(assoc a1 :id (-> 2N .toBigInteger (.pow 128) bigint dec))]
+                 [:id-must-not-be-int-max]))))
+
+(deftest create-account-exists-with-different-flags-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1] [:ok])
+            (ca-step [(assoc a1 :flags #{:foo})]
+                     [:exists-with-different-flags])))))
+
+(deftest create-account-exists-with-different-user-data
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 (assoc a1 :user-data 5)]
+                     [:ok :exists-with-different-user-data-128])))))
+
+(deftest create-account-exists-with-different-ledger-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 (assoc a1 :ledger 2)]
+                     [:ok :exists-with-different-ledger])))))
+
+(deftest create-account-exists-with-different-code-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 (assoc a1 :code 2)]
+                     [:ok :exists-with-different-code])))))
+
+(deftest create-account-exists-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a1]
+                     [:ok :exists])))))
+
+(deftest create-account-flags-are-mutually-exclusive-test
+  (is (consistent?
+        (ca-step init0
+                 [(assoc a1 :flags #{:debits-must-not-exceed-credits
+                                     :credits-must-not-exceed-debits})]
+                 [:flags-are-mutually-exclusive]))))
+
+(deftest create-account-balance-must-be-zero-test
+  (is (consistent?
+        (ca-step init0
+                 [(assoc a1 :credits-pending 1)
+                  (assoc a2 :credits-posted 1)
+                  (assoc a3 :debits-pending 1)
+                  (assoc a4 :debits-posted 1)]
+                 [:credits-pending-must-be-zero
+                  :credits-posted-must-be-zero
+                  :debits-pending-must-be-zero
+                  :debits-posted-must-be-zero]))))
+
+(deftest create-account-ledger-must-not-be-zero-test
+  (is (consistent?
+        (ca-step init0
+                 [(assoc a1 :ledger 0)]
+                 [:ledger-must-not-be-zero]))))
+
+(deftest create-account-code-must-not-be-zero-test
+  (is (consistent?
+        (ca-step init0
+                 [(assoc a1 :code 0)]
+                 [:code-must-not-be-zero]))))
+
+(deftest create-account-imported-event-timestamp-must-not-regress-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a2] [:ok])
+            (ca-step [(assoc a1
+                             :timestamp 101
+                             :flags #{:imported})]
+                     [:imported-event-timestamp-must-not-regress])))))
+
+;; Transfers
+
 (deftest basic-transfer-test
   ; We transfer 5 from 1->2, and 15 from 2->1. No special flags.
   (let [t1 (t 1N a1 a2 5N)
