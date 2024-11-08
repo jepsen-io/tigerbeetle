@@ -308,3 +308,99 @@
                         (t 4N a2 a1 5N #{:pending})
                         (t 5N a2 a1 5N)]
                        [:ok :ok :ok :ok :exceeds-debits]))))))
+
+(deftest balancing-credit-test
+  ; Start off debiting a2 by 10, so we have a limit to reach
+  (let [debit (t 1N a2 a1 10N)
+        m (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              (ct-step [debit] [:ok]))
+        pending (t 2N a1 a2 6N #{:balancing-credit :pending})
+        posted  (t 3N a1 a2 6N #{:balancing-credit})]
+    (testing "pending, posted"
+      (let [m (ct-step m [pending posted] [:ok :ok])]
+        (is (consistent? m))
+        (is (= {1N (assoc a1'
+                          :credits-posted 10N
+                          :debits-posted  4N
+                          :debits-pending 6N)
+                2N (assoc a2'
+                          :credits-posted  4N
+                          :credits-pending 6N
+                          :debits-posted 10N)}
+               (datafy (:accounts m))))
+        (is (= {1N (tts debit)
+                2N (tts pending)
+                ; Transfer 3 only moves 4, not 6
+                3N (assoc (tts posted)
+                          :amount 4N)}
+               (datafy (:transfers m))))))
+    (testing "posted, pending"
+      (let [; Have to flip IDs so they get ordered timestamps
+            posted  (assoc posted :id 2N)
+            pending (assoc pending :id 3N)
+            m       (ct-step m [posted pending] [:ok :ok])]
+        (is (consistent? m))
+        (is (= {1N (assoc a1'
+                          :credits-posted 10N
+                          :debits-posted  6N
+                          :debits-pending 4N)
+                2N (assoc a2'
+                          :credits-posted  6N
+                          :credits-pending 4N
+                          :debits-posted 10N)}
+               (datafy (:accounts m))))
+        (is (= {1N (tts debit)
+                2N (tts posted)
+                ; Transfer 3 only moves 4, not 6
+                3N (assoc (tts pending)
+                          :amount 4N)}
+               (datafy (:transfers m))))))))
+
+(deftest balancing-debit-test
+  ; Start off crediting a2 by 10, so we have a limit to reach
+  (let [credit (t 1N a1 a2 10N)
+        m (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              (ct-step [credit] [:ok]))
+        pending (t 2N a2 a1 6N #{:balancing-debit :pending})
+        posted  (t 3N a2 a1 6N #{:balancing-debit})]
+    (testing "pending, posted"
+      (let [m (ct-step m [pending posted] [:ok :ok])]
+        (is (consistent? m))
+        (is (= {1N (assoc a1'
+                          :debits-posted   10N
+                          :credits-posted  4N
+                          :credits-pending 6N)
+                2N (assoc a2'
+                          :debits-posted  4N
+                          :debits-pending 6N
+                          :credits-posted 10N)}
+               (datafy (:accounts m))))
+        (is (= {1N (tts credit)
+                2N (tts pending)
+                ; Transfer 3 only moves 4, not 6
+                3N (assoc (tts posted)
+                          :amount 4N)}
+               (datafy (:transfers m))))))
+    (testing "posted, pending"
+      (let [; Have to flip IDs so they get ordered timestamps
+            posted  (assoc posted :id 2N)
+            pending (assoc pending :id 3N)
+            m       (ct-step m [posted pending] [:ok :ok])]
+        (is (consistent? m))
+        (is (= {1N (assoc a1'
+                          :debits-posted 10N
+                          :credits-posted  6N
+                          :credits-pending 4N)
+                2N (assoc a2'
+                          :debits-posted  6N
+                          :debits-pending 4N
+                          :credits-posted 10N)}
+               (datafy (:accounts m))))
+        (is (= {1N (tts credit)
+                2N (tts posted)
+                ; Transfer 3 only moves 4, not 6
+                3N (assoc (tts pending)
+                          :amount 4N)}
+               (datafy (:transfers m))))))))

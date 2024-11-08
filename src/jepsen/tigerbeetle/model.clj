@@ -55,21 +55,13 @@
                      `timestamp`. Constructs an invalid state if the timestamp
                      is not strictly monotonic.")
 
-  (create-account-result [model account import?]
-                         "Computes the result code of adding this account to
-                         the given model. Does not actually add it.")
+  (create-account [model account import?]
+                  "Adds an account to a model, returning the new model if ok,
+                  or an error keyword.")
 
-  (create-transfer-result [model transfer import?]
-                          "Computes the result code of adding this transfer to
-                          the given model. Does not actually add it.")
-
-  (create-account [model account]
-                  "Actually adds an account to a model, returning the new
-                  model.")
-
-  (create-transfer [model account]
-                   "Actually adds a transfer to a model, returning the new
-                   model.")
+  (create-transfer [model account import?]
+                   "Adds a transfer to a model, returning the new
+                   model if ok, or an error keyword.")
 
   (create-accounts-chain [model accounts import?]
                          "Creates a series of accounts in a single chain. All
@@ -142,16 +134,13 @@
 
 (defn create-chain
   "Shared logic for creating a single chain of accounts or transfers. Takes a
-  model, a list of events, whether this is an import or not, and a pair of
-  functions:
+  model, a list of events, whether this is an import or not, and a function
+  `(create this event)` which returns either a new model state (either
+  inconsistent, or implicitly an :ok result), or an error keyword.
 
-  (create-result this event import)
-  (create this event)
-
-  which compute the result if we *were* to create that event, and actually
-  add it to the model, respectively. Returns a tuple of [model'
-  expected-results] from applying this particular chain."
-  [model events import? create-result create]
+  Returns a tuple of [model' expected-results] from applying this particular
+  chain."
+  [model events import? create]
   ; Note that *every* response to creating a chain of accounts is either
   ; entirely :ok, or entirely :linked-event-failed with the exception of a
   ; single error.
@@ -159,14 +148,21 @@
     (loopr [i       0
             model'   model]
            [event events]
-           (let [result (create-result model' event import?)]
-             (if (= :ok result)
-               (recur (inc i)
-                      (create model' event))
-               ; Failed! Early return time
+           (let [result (create model' event import?)]
+             (cond
+               ; Logical error; fail chain and return model unchanged.
+               (keyword? result)
                (do (Arrays/fill results :linked-event-failed)
                    (aset results i result)
-                   [model (bl/from-array results)])))
+                   [model (bl/from-array results)])
+
+               ; Inconsistent; abort here. No point computing results.
+               (inconsistent? result)
+               [result nil]
+
+               ; Good, move on
+               true
+               (recur (inc i) result)))
            ; Completed successfully
            (do (Arrays/fill results :ok)
                [model' (bl/from-array results)]))))
@@ -262,7 +258,7 @@
                      :timestamp  timestamp
                      :timestamp' ts})))
 
-  (create-account-result [this account import?]
+  (create-account [this account import?]
     (let [id     (:id account)
           extant (bm/get accounts id)]
       (cond
@@ -330,9 +326,23 @@
         :ledger-must-not-be-zero
 
         true
-        :ok)))
+        ; OK, go! What timestamp did the actual system assign this account?
+        (letr [ts      (bm/get account-id->timestamp id)
+               _       (assert ts (str "No timestamp known for account " id))
+               ; Advance our clock to the new timestamp
+               this' (advance-timestamp this ts)
+               _ (when (inconsistent? this')
+                   ; Timestamp error
+                   (return this'))
+               account (assoc account
+                              :credits-pending 0N
+                              :credits-posted 0N
+                              :debits-pending 0N
+                              :debits-posted 0N
+                              :timestamp ts)]
+          (assoc this' :accounts (bm/put accounts id account))))))
 
-  (create-transfer-result [this transfer import?]
+  (create-transfer [this transfer import?]
     ; See https://docs.tigerbeetle.com/reference/requests/create_transfers
     ; TODO: this is incomplete; we have to go through the whole list of errors
     ; and test them all
@@ -392,72 +402,55 @@
            debit-account (or (bm/get accounts debit-account-id)
                              (return :debit-account-not-found))
 
+           ; Same-value constraints
            ledger (:ledger credit-account)
            _ (when (not= ledger (:ledger debit-account))
                (return :accounts-must-have-the-same-ledger))
            _ (when (not= ledger (:ledger transfer))
                (return :transfer-must-have-the-same-ledger-as-accounts))
 
-           ; Balance constraints
+           ; Balancing transfer
+           credit-debits (:debits-posted credit-account)
+           debit-credits (:credits-posted debit-account)
+           credit-credits+ (+ (:credits-posted credit-account)
+                              (:credits-pending credit-account))
+           debit-debits+   (+ (:debits-posted debit-account)
+                              (:debits-pending debit-account))
+           amount' (cond-> amount
+                     (:balancing-credit flags)
+                     (min (max 0 (- credit-debits credit-credits+)))
+
+                     (:balancing-debit flags)
+                     (min (max 0 (- debit-credits debit-debits+))))
+
+           ; Account balance constraints
            credit-flags (:flags credit-account)
            debit-flags  (:flags debit-account)
            _ (when (and (:credits-must-not-exceed-debits credit-flags)
-                        (< (:debits-posted credit-account)
-                           (+ (:credits-pending credit-account)
-                              (:credits-posted credit-account)
-                              amount)))
+                        (< credit-debits (+ credit-credits+ amount')))
                (return :exceeds-debits))
            _ (when (and (:debits-must-not-exceed-credits debit-flags)
-                        (< (:credits-posted debit-account)
-                           (+ (:debits-pending debit-account)
-                              (:debits-posted debit-account)
-                              amount)))
+                        (< debit-credits (+ debit-debits+ amount')))
                (return :exceeds-credits))
-           ]
-      :ok))
 
-  (create-account [this account]
-    ; What timestamp did the actual system assign this account?
-    (let [id      (:id account)
-          ts      (bm/get account-id->timestamp id)
-          _       (assert ts (str "No timestamp known for account " id))
-          account (assoc account
-                         :credits-pending 0N
-                         :credits-posted 0N
-                         :debits-pending 0N
-                         :debits-posted 0N
-                         :timestamp ts)
-          ; Advance our clock to the new timestamp
-          this' (advance-timestamp this ts)]
-      (if (inconsistent? this')
-        this' ; Oops!
-        (assoc this' :accounts (bm/put accounts id account)))))
-
-  (create-transfer [this transfer]
-    ; What timestamp did the actual system assign this transfer?
-    (letr [{:keys [id amount flags]} transfer
+          ; OK, we're good to go.
+          ; What timestamp did the actual system assign this transfer?
+          {:keys [id amount flags]} transfer
           ts (bm/get transfer-id->timestamp id)
           _  (assert ts (str "No timestamp known for transfer " id))
-          ; Fill in transfer
-          transfer (assoc transfer
-                          :timestamp ts)
           ; Advance our clock to the new timestamp
           this' (advance-timestamp this ts)
           _ (when (inconsistent? this')
               ; Clock nonmonotonic!
               (return this'))
 
-          ; What accounts are we interacting with?
-          pending-id (:pending-id transfer)
-          pending    (when pending-id
-                       (bm/get transfers pending-id))
-          credit-account-id (or (:credit-account-id pending)
-                                (:credit-account-id transfer))
-          debit-account-id (or (:debit-account-id pending)
-                               (:debit-account-id transfer))
-
+          ; Fill in transfer
+          transfer (assoc transfer
+                          :timestamp ts
+                          :amount amount')
           ; Record transfer
           transfers' (bm/put transfers id transfer)
+
           ; Update accounts
           accounts'
           (-> accounts
@@ -465,24 +458,23 @@
                          transfer-update-account
                          :debit
                          (:amount pending)
-                         amount
+                         amount'
                          flags)
               (bm/update credit-account-id
                          transfer-update-account
                          :credit
                          (:amount pending)
-                         amount
+                         amount'
                          flags))]
       (assoc this'
              :accounts accounts'
              :transfers transfers')))
 
   (create-accounts-chain [this accounts import?]
-    (create-chain this accounts import? create-account-result create-account))
+    (create-chain this accounts import? create-account))
 
   (create-transfers-chain [this transfers import?]
-    (create-chain this transfers import?
-                  create-transfer-result create-transfer))
+    (create-chain this transfers import? create-transfer))
 
   (create-accounts [this invoke ok]
     (create-helper this invoke ok create-accounts-chain :account))
