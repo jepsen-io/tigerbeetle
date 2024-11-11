@@ -408,24 +408,78 @@
     (letr [{:keys [id
                    flags
                    credit-account-id
-                   debit-account-id]} transfer
+                   debit-account-id
+                   pending-id
+                   amount
+                   user-data
+                   ledger
+                   code]} transfer
            extant (bm/get transfers id)
+
+           ; Basic checks
+           _ (when (= 0N id)
+               (return :id-must-not-be-zero))
+           _ (when (= uint128-max id)
+               (return :id-must-not-be-int-max))
+
+           ; Extant checks
+          _ (when extant
+              (return
+                (cond
+                  ; See
+                  ; https://docs.tigerbeetle.com/reference/requests/create_transfers/#exists
+                  ; -- we probably have to be more particular about
+                  ; balancing/post-pending transfers
+                  (not= flags (:flags extant))
+                  :exists-with-different-flags
+
+                  (not= pending-id (:pending-id extant))
+                  :exists-with-different-pending-id
+
+                  (not= (:timeout transfer) (:timeout extant))
+                  :exists-with-different-timeout
+
+                  (not= credit-account-id (:credit-account-id extant))
+                  :exists-with-different-credit-account-id
+
+                  (not= debit-account-id (:debit-account-id extant))
+                  :exists-with-different-debit-account-id
+
+                  (not= amount (:amount extant))
+                  :exists-with-different-amount
+
+                  (not= user-data (:user-data extant))
+                  :exists-with-different-user-data-128
+
+                  (not= ledger (:ledger extant))
+                  :exists-with-different-ledger
+
+                  (not= code (:code extant))
+                  :exists-with-different-code
+
+                  true
+                  :exists)))
+
+
+           ; Import checks
            imported? (:imported flags)
            _ (when (and import? (not imported?))
                (return :imported-event-expected))
            _ (when (and (not import?) imported?)
                (return :imported-event-not-expected))
-           _ (when (and (not import?) (not (zero? (:timestamp transfer 0))))
-               (return :timestamp-must-be-zero))
-           _ (when (and import? (< timestamp (:timestamp transfer)))
-               (return :imported-event-timestamp-must-not-advance))
 
-           ledger (:ledger transfer)
-           amount (:amount transfer)
-           code   (:code transfer)
+           ; Timestamp checks
+           ts (:timestamp transfer 0)
+           _ (when (and (not import?) (not (zero? ts)))
+               (return :timestamp-must-be-zero))
+           _ (when (and import? (not (< 0 ts timestamp-upper-bound)))
+               (return :imported-event-timestamp-out-of-range))
+           _ (when (and import? (< timestamp ts))
+               (return :imported-event-timestamp-must-not-advance))
+           _ (when (and import? (<= ts transfer-timestamp))
+               (return :imported-event-timestamp-must-not-regress))
 
            ; The whole post/void dance
-           pending-id (:pending-id transfer)
            pending    (when pending-id
                         (or (bm/get transfers pending-id)
                             (return :pending-transfer-not-found)))
@@ -464,6 +518,9 @@
            debit-account (or (bm/get accounts debit-account-id)
                              (return :debit-account-not-found))
 
+           _ (when (= credit-account-id debit-account-id)
+               (return :accounts-must-be-different))
+
            ; Same-value constraints
            ledger (:ledger credit-account)
            _ (when (not= ledger (:ledger debit-account))
@@ -499,7 +556,7 @@
           ; What timestamp did the actual system assign this transfer?
           {:keys [id amount flags]} transfer
           ts (if imported?
-               (:timestamp transfer)
+               ts
                (bm/get transfer-id->timestamp id))
           _  (assert ts (str "No timestamp known for transfer " id))
           ; Advance our clocks to the new timestamp

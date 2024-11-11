@@ -106,6 +106,10 @@
   [model invoke-val ok-val]
   (step* :create-transfers model invoke-val ok-val))
 
+(def init1
+  "A lot of tests just need two accounts."
+  (ca-step init0 [a1 a2] [:ok :ok]))
+
 (defn la-step
   "Shorthand for a lookup-accounts step."
   [model invoke-val ok-val]
@@ -568,3 +572,104 @@
     (is (= 102 (:timestamp m))) ; From the accounts
     (is (= 102 (:account-timestamp m)))
     (is (= 3   (:transfer-timestamp m)))))
+
+(deftest create-transfer-linked-event-failed-test
+  ; This a2 fails, so a1 and a3 should also
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            (ct-step (chain [(t 3N a1 a2 5N)
+                             (t 4N a1 a1 5N)
+                             (t 5N a2 a1 5N)])
+                     [:linked-event-failed
+                      :accounts-must-be-different
+                      :linked-event-failed])))))
+
+(deftest create-transfer-linked-event-chain-open-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            (ct-step [(t 3N a1 a2 5N)
+                      (t 4N a1 a2 5N #{:linked})]
+                     [:ok :linked-event-chain-open])))))
+
+(deftest create-transfer-imported-event-expected-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            (ct-step [(assoc (t 3N a1 a2 10N  #{:imported}) :timestamp 101)
+                      (t 4N a1 a2 10N)]
+                     [:ok :imported-event-expected])))))
+
+(deftest create-transfer-imported-event-not-expected-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            (ct-step [(t 3N a1 a2 10N)
+                      (t 4N a1 a2 10N #{:imported})]
+                     [:ok :imported-event-not-expected])))))
+
+(deftest create-transfer-timestamp-must-be-zero-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            (ct-step [(assoc (t 3N a1 a2 5N) :timestamp 5)]
+                     [:timestamp-must-be-zero])))))
+
+(deftest create-transfer-imported-event-timestamp-out-of-range-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            (ct-step [(assoc (t 3N a1 a2 5N #{:imported}) :timestamp 0)]
+                     [:imported-event-timestamp-out-of-range])))))
+
+(deftest create-transfer-imported-event-timestamp-must-not-advance-test
+  (is (consistent?
+        (-> init1
+            (ct-step [(assoc (t 3N a1 a2 1N #{:imported})
+                             :timestamp 201)]
+                     [:imported-event-timestamp-must-not-advance])))))
+
+(deftest create-transfer-id-must-not-be-zero-test
+  (is (consistent?
+        (-> init1
+            (ct-step [(t 0N a1 a2 1N)]
+                     [:id-must-not-be-zero])))))
+
+(deftest create-transfer-id-must-not-be-int-max-test
+  (let [id (-> 2N
+               .toBigInteger
+               (.pow 128)
+               bigint
+               dec)]
+    (is (consistent?
+          (-> init1
+              (ct-step [(t id a1 a2 1N)]
+                       [:id-must-not-be-int-max]))))))
+
+(deftest create-transfer-exists-with-different-*-test
+  (is (consistent?
+        (-> init1
+            (ct-step [(t 3N a1 a2 1N)
+                      (t 3N a1 a2 1N #{:balancing-credit})
+                      (assoc (t 3N a1 a2 1N) :pending-id 4N)
+                      (assoc (t 3N a1 a2 1N) :timeout 1)
+                      (t 3N a3 a2 1N)
+                      (t 3N a1 a3 1N)
+                      (t 3N a1 a2 100N)
+                      (assoc (t 3N a1 a2 1N) :user-data 5)
+                      (assoc (t 3N a1 a2 1N) :ledger 5)
+                      (assoc (t 3N a1 a2 1N) :code 5)
+                      (t 3N a1 a2 1N)]
+                     [:ok
+                      :exists-with-different-flags
+                      :exists-with-different-pending-id
+                      :exists-with-different-timeout
+                      :exists-with-different-debit-account-id
+                      :exists-with-different-credit-account-id
+                      :exists-with-different-amount
+                      :exists-with-different-user-data-128
+                      :exists-with-different-ledger
+                      :exists-with-different-code
+                      :exists])))))
+
