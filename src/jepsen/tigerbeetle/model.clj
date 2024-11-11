@@ -21,7 +21,8 @@
                           [set :as bs]
                           [util :refer [iterable=]]]
             [clojure [datafy :refer [datafy]]
-                     [pprint :refer [pprint]]]
+                     [pprint :refer [pprint]]
+                     [set :as set]]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [letr loopr]]
             [jepsen.history :as h]
@@ -48,6 +49,17 @@
   "Is this model inconsistent?"
   [model]
   (instance? Inconsistent model))
+
+(def permanent-errors
+  "A set of errors that we remember and return for subsequent attempts. See
+  https://docs.tigerbeetle.com/reference/requests/create_transfers/#id_already_failed."
+  #{:debit-account-not-found
+    :credit-account-not-found
+    :pending-transfer-not-found
+    :exceeds-credits
+    :exceeds-debits
+    :debit-account-already-closed
+    :credit-account-already-closed})
 
 (definterface+ ITB
   (advance-timestamp [model ^long timestamp]
@@ -150,6 +162,14 @@
     (Arrays/fill a x)
     (bl/from-array a)))
 
+(defn remember-error
+  "Some 'transient' errors are remembered for later. Takes a model, an event
+  with an ID, and an error keyword. Returns a model."
+  [model event error]
+  (if (contains? permanent-errors error)
+    (update model :errors bm/put (:id event) error)
+    model))
+
 (defn create-chain
   "Shared logic for creating a single chain of accounts or transfers. Takes a
   model, a function to create a single event in a model, a list of events,
@@ -173,11 +193,13 @@
                           :linked-event-chain-open
                           (create model' event import?))]
              (cond
-               ; Logical error; fail chain and return model unchanged.
+               ; Logical error; fail chain and return model without having
+               ; applied ops.
                (keyword? result)
                (do (Arrays/fill results :linked-event-failed)
                    (aset results i result)
-                   [model (bl/from-array results)])
+                   [(remember-error model event result)
+                    (bl/from-array results)])
 
                ; Inconsistent; abort here. No point computing results.
                (inconsistent? result)
@@ -230,6 +252,43 @@
            ; Done applying chains.
            (validate this invoke ok event-name events expected actual))))
 
+(def conflicting-transfer-flags
+  "A map of transfer flags to sets of conflicting flags."
+  {:pending #{:post-pending-transfer
+              :void-pending-transfer}
+   :post-pending-transfer #{:pending
+                            :void-pending-transfer
+                            :balancing-debit
+                            :balancing-credit
+                            :closing-debit
+                            :closing-credit}
+   :void-pending-transfer #{:pending
+                            :post-pending-transfer
+                            :balancing-debit
+                            :balancing-credit
+                            :closing-debit
+                            :closing-credit}
+   :balancing-debit #{:void-pending-transfer
+                      :post-pending-transfer}
+   :balancing-credit #{:void-pending-transfer
+                       :post-pending-transfer}
+   :closing-debit #{:post-pending-transfer
+                    :void-pending-transfer}
+   :closing-credit #{:post-pending-transfer
+                     :void-pending-transfer}})
+
+(defn transfer-flags-error
+  "Takes transfer flags. Returns :flag-are-mutually-exclusive if it has
+  mutually exclusive flags, else nil."
+  [flags]
+  ; See https://docs.tigerbeetle.com/reference/requests/create_transfers/#flags_are_mutually_exclusive
+  (loopr []
+         [flag flags]
+    (let [conflicts (set/intersection flags (conflicting-transfer-flags flag))]
+      (if (empty? conflicts)
+        (recur)
+        :flags-are-mutually-exclusive))))
+
 (defn transfer-update-account
   "Called to update a single account for a transfer. Take an account, a mode
   (:debit or :credit), an amount, and the transfer flags."
@@ -279,6 +338,8 @@
    ^long transfer-timestamp ; The last transfer timestamp created
    accounts  ; A map of account IDs to accounts
    transfers ; A map of transfer IDs to transfers
+   errors    ; A map of permanent errors (TigerBeetle calls these *transient*
+             ; errors, but they persist forever
    ]
 
   ITB
@@ -416,11 +477,17 @@
                    code]} transfer
            extant (bm/get transfers id)
 
+           ; Did this already fail?
+           _ (when-let [error (bm/get errors id)]
+               (return :id-already-failed))
+
            ; Basic checks
            _ (when (= 0N id)
                (return :id-must-not-be-zero))
            _ (when (= uint128-max id)
                (return :id-must-not-be-int-max))
+           _ (when-let [err (transfer-flags-error flags)]
+               (return err))
 
            ; Extant checks
           _ (when extant
@@ -459,7 +526,6 @@
 
                   true
                   :exists)))
-
 
            ; Import checks
            imported? (:imported flags)
@@ -650,4 +716,5 @@
             :account-timestamp -1
             :transfer-timestamp -1
             :accounts  bm/empty
-            :transfers bm/empty}))
+            :transfers bm/empty
+            :errors    bm/empty}))

@@ -138,6 +138,20 @@
                          (assoc a2 :flags #{:linked})
                          (assoc a3 :flags #{:linked})]))))))
 
+(deftest transfer-flags-error-test
+  (testing "nonconflicting"
+    (are [flags] (nil? (transfer-flags-error flags))
+         nil
+         #{}
+         #{:pending}
+         #{:balancing-credit :balancing-debit}
+         #{:imported :post-pending-transfer}))
+  (testing "conflicting"
+    (are [flags] (transfer-flags-error flags)
+         #{:pending :post-pending-transfer}
+         #{:post-pending-transfer :closing-credit :balancing-credit}
+         #{:balancing-debit :void-pending-transfer})))
+
 (deftest create-accounts-test
   (testing "empty"
     (is (= init0
@@ -375,11 +389,13 @@
 
 (deftest create-transfer-missing-acct-test
   ; We try to transfer without a debit or credit account.
-  (let [t1 (t 1N a1 a2 5N)
-        t2 (t 2N a2 a3 10N)
+  (let [t1 (t 3N a1 a2 5N)
+        t2 (t 4N a2 a3 10N)
         ; Only account 2 exists
         model (ca-step init0 [a2] [:ok])]
-    (is (= model
+    (is (= (assoc model
+                  :errors (bm/from {3N :debit-account-not-found
+                                    4N :credit-account-not-found}))
            (ct-step model [t1 t2]
                     [:debit-account-not-found
                      :credit-account-not-found])))))
@@ -673,3 +689,24 @@
                       :exists-with-different-code
                       :exists])))))
 
+(deftest create-transfer-id-already-failed-test
+  (let [transfers [(t 4N a3 a2 1N)
+                   (t 5N a1 a3 1N)
+                   (assoc (t 6N a1 a2 0N) :pending-id 4N)]]
+    ; Punting on exceeds-credits/debits, already-closed
+    (is (consistent?
+          (-> init1
+              (ct-step transfers
+                       [:debit-account-not-found
+                        :credit-account-not-found
+                        :pending-transfer-not-found])
+              (ct-step transfers
+                       [:id-already-failed
+                        :id-already-failed
+                        :id-already-failed]))))))
+
+(deftest flags-are-mutually-exclusive-test
+  (is (consistent?
+        (-> init1
+            (ct-step [(t 3N a1 a2 1N #{:pending :post-pending-transfer})]
+                     [:flags-are-mutually-exclusive])))))
