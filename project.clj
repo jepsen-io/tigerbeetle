@@ -11,7 +11,7 @@
   :repl-options {:init-ns jepsen.tigerbeetle.repl}
   :main jepsen.tigerbeetle.cli
   :jvm-opts ["-server"
-             ;"-XX:-OmitStackTraceInFastThrow"
+             "-XX:-OmitStackTraceInFastThrow"
              "-Djava.awt.headless=true"
              "-Xmx24g"
              ]

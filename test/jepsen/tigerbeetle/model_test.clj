@@ -402,30 +402,32 @@
 
 (deftest transfer-import-test
   ; Ensure all events are imports or none are
-  (let [t1 (assoc (t 1N a1 a2 5N)
-                  :timestamp 1N
+  (let [t1 (assoc (t 3N a1 a2 5N)
+                  :timestamp 103N
                   :flags #{:imported})
-        t2 (t 2N a2 a1 5N)
-        model (ca-step init0 [a1 a2] [:ok :ok])]
+        t2 (t 4N a2 a1 5N)
+        model (ca-step init0 [a1 a2 a5] [:ok :ok :ok])]
     (testing "import first"
       (let [model' (ct-step model [t1 t2] [:ok :imported-event-expected])]
         (is (consistent? model'))
         ; t1 should have executed, but t2 nope
-        (is (= #{1N} (set (bm/keys (:transfers model')))))))
+        (is (= #{3N} (set (bm/keys (:transfers model')))))))
     (testing "import second"
       (let [model' (ct-step model [t2 t1] [:ok :imported-event-not-expected])]
         (is (consistent? model'))
         ; t2 should have executed, but not t1
-        (is (= #{2N} (set (bm/keys (:transfers model')))))))))
+        (is (= #{4N} (set (bm/keys (:transfers model')))))))))
 
 (deftest two-phase-transfer-test
   ; Perform a pending transfer, then post or void it.
   (let [pending (t 1N a1 a2 10N #{:pending})
         ; We only post 5 of the 10 pending
         post    (assoc (t 2N 0N 0N 5N #{:post-pending-transfer})
-                       :pending-id 1N)
+                       :pending-id 1N
+                       :code 1)
         void    (assoc (t 3N 0N 0N 0N #{:void-pending-transfer})
-                       :pending-id 1N)
+                       :pending-id 1N
+                       :code 1)
         model   (ca-step init0 [a1 a2] [:ok :ok])]
     (testing "pending"
       (let [m (ct-step model [pending] [:ok])]
@@ -440,7 +442,10 @@
         (is (consistent? m))
         (is (= {1N (assoc a1' :debits-posted 5N)
                 2N (assoc a2' :credits-posted 5N)}
-               (datafy (:accounts m))))))
+               (datafy (:accounts m))))
+        (is (= {1N (assoc (tts pending) :state :posted)
+                2N (tts post)}
+               (datafy (:transfers m))))))
     (testing "void"
       (let [m (ct-step model [pending void] [:ok :ok])]
         ; Balances should remain at 0
@@ -448,37 +453,9 @@
         (is (= {1N a1'
                 2N a2'}
                (datafy (:accounts m))))
-        (is (= {1N (tts pending)
+        (is (= {1N (assoc (tts pending) :state :voided)
                 3N (tts void)}
                (datafy (:transfers m))))))))
-
-(deftest exceeds-credits-test
-  (let [a1 (update a1 :flags conj :debits-must-not-exceed-credits)]
-    (is (consistent?
-          (-> init0
-              (ca-step [a1 a2] [:ok :ok])
-              ; We can credit a1, and debit it up to posted+pending, but no further
-              (ct-step [(t 1N a2 a1 10N)
-                        (t 2N a2 a1 5N #{:pending})
-                        ; a1 now has 10 posted, 5 pending
-                        (t 3N a1 a2 5N)
-                        (t 4N a1 a2 5N #{:pending})
-                        (t 5N a1 a2 5N)]
-                       [:ok :ok :ok :ok :exceeds-credits]))))))
-
-(deftest exceeds-debits-test
-  (let [a1 (update a1 :flags conj :credits-must-not-exceed-debits)]
-    (is (consistent?
-          (-> init0
-              (ca-step [a1 a2] [:ok :ok])
-              ; We can debit a1, and credit it up to posted+pending, but no further
-              (ct-step [(t 1N a1 a2 10N)
-                        (t 2N a1 a2 5N #{:pending})
-                        ; a1 now has 10 posted, 5 pending
-                        (t 3N a2 a1 5N)
-                        (t 4N a2 a1 5N #{:pending})
-                        (t 5N a2 a1 5N)]
-                       [:ok :ok :ok :ok :exceeds-debits]))))))
 
 (deftest balancing-credit-test
   ; Start off debiting a2 by 10, so we have a limit to reach
@@ -612,8 +589,8 @@
 (deftest create-transfer-imported-event-expected-test
   (is (consistent?
         (-> init0
-            (ca-step [a1 a2] [:ok :ok])
-            (ct-step [(assoc (t 3N a1 a2 10N  #{:imported}) :timestamp 101)
+            (ca-step [a1 a2 a5] [:ok :ok :ok])
+            (ct-step [(assoc (t 3N a1 a2 10N #{:imported}) :timestamp 103)
                       (t 4N a1 a2 10N)]
                      [:ok :imported-event-expected])))))
 
@@ -692,7 +669,7 @@
 (deftest create-transfer-id-already-failed-test
   (let [transfers [(t 4N a3 a2 1N)
                    (t 5N a1 a3 1N)
-                   (assoc (t 6N a1 a2 0N) :pending-id 4N)]]
+                   (assoc (t 6N a1 a2 0N #{:post-pending-transfer}) :pending-id 4N)]]
     ; Punting on exceeds-credits/debits, already-closed
     (is (consistent?
           (-> init1
@@ -705,8 +682,290 @@
                         :id-already-failed
                         :id-already-failed]))))))
 
-(deftest flags-are-mutually-exclusive-test
+(deftest create-transfer-flags-are-mutually-exclusive-test
   (is (consistent?
         (-> init1
             (ct-step [(t 3N a1 a2 1N #{:pending :post-pending-transfer})]
                      [:flags-are-mutually-exclusive])))))
+
+(deftest create-transfer-*-account-id-must-not-be-*-test
+  (is (consistent?
+        (-> init1
+            (ct-step [(t 3N 0N a2 1N)
+                      (t 3N a1 0N 1N)
+                      (t 3N uint128-max a2 1N)
+                      (t 3N a1 uint128-max 1N)]
+                     [:debit-account-id-must-not-be-zero
+                      :credit-account-id-must-not-be-zero
+                      :debit-account-id-must-not-be-int-max
+                      :credit-account-id-must-not-be-int-max])))))
+
+(deftest create-transfer-accounts-must-be-different-test
+  (is (consistent?
+        (-> init1
+            (ct-step [(t 3N a2 a2 1N)]
+                     [:accounts-must-be-different])))))
+
+(deftest create-transfer-pending-id-must-be-zero-test
+  (is (consistent?
+        (-> init1
+            (ct-step [(assoc (t 3N a1 a2 1N) :pending-id 4N)]
+                     [:pending-id-must-be-zero])))))
+
+(deftest create-transfer-pending-id-must-not-be-*-test
+  (is (consistent?
+        (-> init1
+            (ct-step [(assoc (t 3N a1 a2 1N #{:void-pending-transfer}) :pending-id 0N)
+                      (assoc (t 3N a1 a2 1N #{:post-pending-transfer}) :pending-id uint128-max)]
+                     [:pending-id-must-not-be-zero
+                      :pending-id-must-not-be-int-max])))))
+
+(deftest create-transfer-pending-id-must-be-different-test
+  (is (consistent?
+        (ct-step init1
+                 [(assoc (t 3N a1 a2 1N #{:post-pending-transfer}) :pending-id 3N)]
+                 [:pending-id-must-be-different]))))
+
+(deftest create-transfer-timeout-reserved-for-pending-transfer-test
+  (is (consistent?
+        (ct-step init1
+                 [(assoc (t 3N a1 a2 1N) :timeout 1)]
+                 [:timeout-reserved-for-pending-transfer]))))
+
+(deftest create-transfer-closing-transfer-must-be-pending-test
+  (is (consistent?
+        (ct-step init1
+                 [(t 3N a1 a2 1N #{:closing-credit})
+                  (t 4N a1 a2 1N #{:closing-debit})]
+                 [:closing-transfer-must-be-pending
+                  :closing-transfer-must-be-pending]))))
+
+(deftest create-transfer-code-must-not-be-zero-test
+  (is (consistent?
+        (ct-step init1
+                 [(assoc (t 3N a1 a2 1N) :code 0)]
+                 [:code-must-not-be-zero]))))
+
+(deftest create-transfer-*-account-not-found-test
+  (is (consistent?
+        (ct-step init1
+                 [(t 3N a1 a3 1N)
+                  (t 4N a3 a2 1N)]
+                 [:credit-account-not-found
+                  :debit-account-not-found]))))
+
+(deftest create-transfer-same-ledger-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1
+                      a2
+                      (assoc a3 :ledger 2)]
+                     [:ok :ok :ok])
+            (ct-step [(t 4N a1 a3 1N)
+                      (assoc (t 5N a1 a2 1N) :ledger 2)]
+                     [:accounts-must-have-the-same-ledger
+                      :transfer-must-have-the-same-ledger-as-accounts])))))
+
+(deftest create-transfer-pending-transfer-not-found-test
+  (is (consistent?
+        (ct-step init1
+                 [(assoc (t 4N a1 a2 1N #{:post-pending-transfer})
+                         :pending-id 3N)]
+                 [:pending-transfer-not-found]))))
+
+(deftest create-transfer-pending-transfer-not-pending-test
+  (is (consistent?
+        (ct-step init1
+                 [(t 3N a1 a2 1N)
+                  (assoc (t 4N a1 a2 1N #{:post-pending-transfer})
+                         :pending-id 3N)]
+                 [:ok :pending-transfer-not-pending]))))
+
+(deftest create-transfer-pending-transfer-has-different-*-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2 a3] [:ok :ok :ok])
+            (ct-step [(t 5N a1 a2 1N #{:pending})
+                      (assoc (t 6N a3 a2 1N #{:post-pending-transfer}) :pending-id 5N)
+                      (assoc (t 7N a1 a3 1N #{:post-pending-transfer}) :pending-id 5N)
+                      (assoc (t 8N a1 a2 1N #{:post-pending-transfer}) :pending-id 5N :ledger 2)
+                      (assoc (t 9N a1 a2 1N #{:post-pending-transfer}) :pending-id 5N :code 123)]
+                     [:ok
+                      :pending-transfer-has-different-debit-account-id
+                      :pending-transfer-has-different-credit-account-id
+                      :pending-transfer-has-different-ledger
+                      :pending-transfer-has-different-code])))))
+
+(deftest create-transfer-exceeds-pending-transfer-amount-test
+  (is (consistent?
+        (ct-step init1
+                 [(t 3N a1 a2 5N #{:pending})
+                  (assoc (t 4N a1 a2 6N #{:post-pending-transfer})
+                         :code 0
+                         :pending-id 3N)]
+                 [:ok :exceeds-pending-transfer-amount]))))
+
+(deftest create-transfer-pending-transfer-has-different-amount-test
+  ; You can post for less
+  (testing "post"
+    (is (consistent?
+          (ct-step init1
+                   [(t 3N a1 a2 5N #{:pending})
+                    (assoc (t 4N a1 a2 3N #{:post-pending-transfer})
+                           :code 0
+                           :pending-id 3N)]
+                   [:ok :ok]))))
+  ; But you can't void for less
+  (testing "void"
+    (is (consistent?
+          (ct-step init1
+                   [(t 3N a1 a2 5N #{:pending})
+                    (assoc (t 4N a1 a2 3N #{:void-pending-transfer})
+                           :code 0
+                           :pending-id 3N)]
+                   [:ok :pending-transfer-has-different-amount])))))
+
+(deftest create-transfer-pending-transfer-already-posted-test
+  (is (consistent?
+        (ct-step init1
+                 [(t 3N a1 a2 5N #{:pending})
+                  (assoc (t 4N a1 a2 0 #{:post-pending-transfer}) :code 0 :pending-id 3N)
+                  (assoc (t 5N a1 a2 0 #{:post-pending-transfer}) :code 0 :pending-id 3N)
+                  (assoc (t 6N a1 a2 0 #{:void-pending-transfer}) :code 0 :pending-id 3N)]
+                 [:ok :ok
+                  :pending-transfer-already-posted
+                  :pending-transfer-already-posted]))))
+
+(deftest create-transfer-pending-transfer-already-voided-test
+  (is (consistent?
+        (ct-step init1
+                 [(t 3N a1 a2 5N #{:pending})
+                  (assoc (t 4N a1 a2 0 #{:void-pending-transfer}) :code 0 :pending-id 3N)
+                  (assoc (t 5N a1 a2 0 #{:post-pending-transfer}) :code 0 :pending-id 3N)
+                  (assoc (t 6N a1 a2 0 #{:void-pending-transfer}) :code 0 :pending-id 3N)]
+                 [:ok :ok
+                  :pending-transfer-already-voided
+                  :pending-transfer-already-voided]))))
+
+(deftest create-transfer-imported-event-timestamp-must-not-regress-test
+  ; TODO: we're punting on the restriction that you can't duplicate the
+  ; timestamp of an account. We *can*, it's just Even More Maps to keep track
+  ; of.
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2 a5] [:ok :ok :ok]) ; This gets us timestamps 101, 102, 105
+            (ct-step [(assoc (t 3N a1 a2 5N #{:imported}) :timestamp 104)
+                      (assoc (t 4N a1 a2 5N #{:imported}) :timestamp 103)]
+                     [:ok :imported-event-timestamp-must-not-regress])))))
+
+(deftest create-transfer-imported-event-timestamp-must-postdate-*-account-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a3] [:ok :ok])
+            ; a1 at timestamp 101, a3 at timestamp 103. We try to sneak in
+            ; between.
+            (ct-step [(assoc (t 5N a3 a1 1N #{:imported}) :timestamp 102)]
+                     [:imported-event-timestamp-must-postdate-debit-account])))))
+
+(deftest create-transfer-imported-event-timeout-must-be-zero-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2 a5] [:ok :ok :ok])
+            (ct-step [(assoc (t 3N a1 a2 1N #{:pending :imported})
+                             :timestamp 103
+                             :timeout 1)]
+                     [:imported-event-timeout-must-be-zero])))))
+
+(deftest create-transfer-*-account-already-closed-test
+  ; TODO: punting on account closure for now
+  )
+
+(deftest create-transfer-overflows-*-test
+  (let [half (inc (bigint (/ uint128-max 2)))
+        third (inc (bigint (/ uint128-max 3)))
+        init  (-> init0
+                  (ca-step [a1 a2 a3] [:ok :ok :ok]))]
+    (testing "debits-pending"
+      (is (consistent?
+            (ct-step init
+                     [(t 3N a1 a2 half #{:pending})
+                      (t 4N a1 a3 half #{:pending})]
+                     [:ok
+                      :overflows-debits-pending]))))
+    (testing "debits-posted"
+      (is (consistent?
+            (ct-step init
+                     [(t 3N a1 a2 half)
+                      (t 4N a1 a3 half)]
+                     [:ok
+                      :overflows-debits-posted]))))
+    (testing "credits-pending"
+      (is (consistent?
+            (ct-step init
+                     [(t 3N a1 a3 half #{:pending})
+                      (t 4N a2 a3 half #{:pending})]
+                     [:ok
+                      :overflows-credits-pending]))))
+    (testing "credits-posted"
+      (is (consistent?
+            (ct-step init
+                     [(t 3N a1 a3 half)
+                      (t 4N a2 a3 half)]
+                     [:ok
+                      :overflows-credits-posted]))))
+    (testing "debits"
+      (is (consistent?
+            (ct-step init
+                     [(t 3N a1 a2 half #{:pending})
+                      (t 4N a1 a3 half)]
+                     [:ok
+                      :overflows-debits]))))
+    (testing "credits"
+      (is (consistent?
+            (ct-step init
+                     [(t 3N a1 a3 half #{:pending})
+                      (t 4N a2 a3 half)]
+                     [:ok
+                      :overflows-credits]))))
+    ))
+
+(deftest create-transfer-overflows-timeout-test
+  (let [timeout (-> Long/MAX_VALUE
+                    (- 103) ; timestamp for this txfr
+                    ; nanos->secs
+                    (/ 1000000000)
+                    long
+                    inc)]
+    (is (consistent?
+          (ct-step init1
+                   [(assoc (t 3N a1 a2 1N #{:pending})
+                           :timeout timeout)]
+                   [:overflows-timeout])))))
+
+(deftest exceeds-credits-test
+  (let [a1 (update a1 :flags conj :debits-must-not-exceed-credits)]
+    (is (consistent?
+          (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              ; We can credit a1, and debit it up to posted+pending, but no further
+              (ct-step [(t 1N a2 a1 10N)
+                        (t 2N a2 a1 5N #{:pending})
+                        ; a1 now has 10 posted, 5 pending
+                        (t 3N a1 a2 5N)
+                        (t 4N a1 a2 5N #{:pending})
+                        (t 5N a1 a2 5N)]
+                       [:ok :ok :ok :ok :exceeds-credits]))))))
+
+(deftest exceeds-debits-test
+  (let [a1 (update a1 :flags conj :credits-must-not-exceed-debits)]
+    (is (consistent?
+          (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              ; We can debit a1, and credit it up to posted+pending, but no further
+              (ct-step [(t 1N a1 a2 10N)
+                        (t 2N a1 a2 5N #{:pending})
+                        ; a1 now has 10 posted, 5 pending
+                        (t 3N a2 a1 5N)
+                        (t 4N a2 a1 5N #{:pending})
+                        (t 5N a2 a1 5N)]
+                       [:ok :ok :ok :ok :exceeds-debits]))))))

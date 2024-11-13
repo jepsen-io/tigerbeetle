@@ -110,6 +110,10 @@
   "One bigger than the biggest timestamp for an imported event (2^63)"
   9223372036854775808)
 
+(def int64-max
+  "2^63 - 1"
+  Long/MAX_VALUE)
+
 (def uint128-max
   "2^128 - 1"
   340282366920938463463374607431768211455N)
@@ -470,12 +474,12 @@
                    flags
                    credit-account-id
                    debit-account-id
-                   pending-id
                    amount
                    user-data
                    ledger
                    code]} transfer
            extant (bm/get transfers id)
+           pending-id (:pending-id transfer 0)
 
            ; Did this already fail?
            _ (when-let [error (bm/get errors id)]
@@ -486,6 +490,8 @@
                (return :id-must-not-be-zero))
            _ (when (= uint128-max id)
                (return :id-must-not-be-int-max))
+
+           ; Pre-existing error
            _ (when-let [err (transfer-flags-error flags)]
                (return err))
 
@@ -500,7 +506,7 @@
                   (not= flags (:flags extant))
                   :exists-with-different-flags
 
-                  (not= pending-id (:pending-id extant))
+                  (not= pending-id (:pending-id extant 0))
                   :exists-with-different-pending-id
 
                   (not= (:timeout transfer) (:timeout extant))
@@ -529,69 +535,137 @@
 
            ; Import checks
            imported? (:imported flags)
-           _ (when (and import? (not imported?))
-               (return :imported-event-expected))
-           _ (when (and (not import?) imported?)
-               (return :imported-event-not-expected))
+           _ (if import?
+               (when (not imported?)
+                 (return :imported-event-expected))
+               (when imported?
+                 (return :imported-event-not-expected)))
 
            ; Timestamp checks
            ts (:timestamp transfer 0)
-           _ (when (and (not import?) (not (zero? ts)))
-               (return :timestamp-must-be-zero))
-           _ (when (and import? (not (< 0 ts timestamp-upper-bound)))
-               (return :imported-event-timestamp-out-of-range))
-           _ (when (and import? (< timestamp ts))
-               (return :imported-event-timestamp-must-not-advance))
-           _ (when (and import? (<= ts transfer-timestamp))
-               (return :imported-event-timestamp-must-not-regress))
+           _ (if import?
+               (let [credit-acct (bm/get accounts credit-account-id
+                                         {:timestamp -1})
+                     debit-acct  (bm/get accounts debit-account-id
+                                         {:timestamp -1})]
+                 (cond (not (< 0 ts timestamp-upper-bound))
+                       (return :imported-event-timestamp-out-of-range)
+
+                       (< timestamp ts)
+                       (return :imported-event-timestamp-must-not-advance)
+
+                       (<= ts transfer-timestamp)
+                       (return :imported-event-timestamp-must-not-regress)
+
+                       (<= ts (:timestamp credit-acct))
+                       (return :imported-event-timestamp-must-postdate-credit-account)
+
+                       (<= ts (:timestamp debit-acct))
+                       (return :imported-event-timestamp-must-postdate-debit-account)
+
+                       (< 0 (:timeout transfer 0))
+                       (return :imported-event-timeout-must-be-zero)))
+
+               ; Not importing
+               (when (not (zero? ts))
+                 (return :timestamp-must-be-zero)))
 
            ; The whole post/void dance
-           pending    (when pending-id
+           post?      (:post-pending-transfer flags)
+           void?      (:void-pending-transfer flags)
+           _          (if (or post? void?)
+                        (condp = pending-id
+                          0N          (return :pending-id-must-not-be-zero)
+                          uint128-max (return :pending-id-must-not-be-int-max)
+                          id          (return :pending-id-must-be-different)
+                          nil)
+                        (when (not= 0N pending-id)
+                          (return :pending-id-must-be-zero)))
+           pending    (when (not= 0N pending-id)
                         (or (bm/get transfers pending-id)
                             (return :pending-transfer-not-found)))
            _ (when pending
-               (letr [_ (when (not (:pending (:flags pending)))
-                          (return :pending-transfer-not-pending))
-                      _ (when (and (not= credit-account-id 0)
-                                   (not= credit-account-id
-                                         (:credit-account-id pending)))
-                          (return :pending-transfer-has-different-credit-account-id))
-                      _ (when (and (not= debit-account-id 0)
-                                   (not= debit-account-id
-                                         (:debit-account-id pending)))
-                          (return :pending-transfer-has-different-debit-account-id))
-                      _ (when (and (not= ledger 0)
-                                   (not= ledger (:ledger pending)))
-                          (return :pending-transfer-has-different-ledger))
-                      _ (when (and (not= code 0)
-                                   (not= code (:code pending)))
-                          (return :pending-transfer-has-different-code))
-                      _ (when (< (:amount pending) amount)
-                          (return :exceeds-pending-transfer-amount))
-                      void? (:void-pending-transfer flags)
-                      _ (when (and void?
-                                   (not= amount 0N)
-                                   (not= amount (:amount pending)))
-                          (return :pending-transfer-has-different-amount))]))
+               (cond
+                 (not (:pending (:flags pending)))
+                 (return :pending-transfer-not-pending)
 
-           ; Fetch accounts
+                 (and (not= credit-account-id 0)
+                      (not= credit-account-id
+                            (:credit-account-id pending)))
+                 (return :pending-transfer-has-different-credit-account-id)
+
+                 (and (not= debit-account-id 0)
+                      (not= debit-account-id
+                            (:debit-account-id pending)))
+                 (return :pending-transfer-has-different-debit-account-id)
+
+                 (and (not= ledger 0)
+                      (not= ledger (:ledger pending)))
+                 (return :pending-transfer-has-different-ledger)
+
+                 (and (not= code 0)
+                      (not= code (:code pending)))
+                 (return :pending-transfer-has-different-code)
+
+                 (< (:amount pending) amount)
+                 (return :exceeds-pending-transfer-amount)
+
+                 (and void?
+                      (not= amount 0N)
+                      (not= amount (:amount pending)))
+                 (return :pending-transfer-has-different-amount)
+
+                 (= :posted (:state pending))
+                 (return :pending-transfer-already-posted)
+
+                 (= :voided (:state pending))
+                 (return :pending-transfer-already-voided)
+               ))
+
+           _ (when (not pending)
+               (cond
+                 (= 0 code)
+                 (return :code-must-not-be-zero)
+
+                 (or (:closing-credit flags)
+                     (:closing-debit flags))
+                 (return :closing-transfer-must-be-pending)))
+
+           _ (if (:pending flags)
+               ; This is a pending transfer
+               nil
+               ; This is not a pending transfer
+               (cond
+                 (< 0 (:timeout transfer 0))
+                 (return :timeout-reserved-for-pending-transfer)))
+
+           ; Check credit/debit IDs
            credit-account-id (or (:credit-account-id pending)
                                  credit-account-id)
            debit-account-id (or (:debit-account-id pending)
                                 debit-account-id)
+           _ (when (= 0N credit-account-id)
+               (return :credit-account-id-must-not-be-zero))
+           _ (when (= 0N debit-account-id)
+               (return :debit-account-id-must-not-be-zero))
+           _ (when (= uint128-max credit-account-id)
+               (return :credit-account-id-must-not-be-int-max))
+           _ (when (= uint128-max debit-account-id)
+               (return :debit-account-id-must-not-be-int-max))
+           _ (when (= credit-account-id debit-account-id)
+               (return :accounts-must-be-different))
+
+           ; Fetch accounts
            credit-account (or (bm/get accounts credit-account-id)
                               (return :credit-account-not-found))
            debit-account (or (bm/get accounts debit-account-id)
                              (return :debit-account-not-found))
 
-           _ (when (= credit-account-id debit-account-id)
-               (return :accounts-must-be-different))
-
            ; Same-value constraints
-           ledger (:ledger credit-account)
-           _ (when (not= ledger (:ledger debit-account))
+           _ (when (not= (:ledger credit-account)
+                         (:ledger debit-account))
                (return :accounts-must-have-the-same-ledger))
-           _ (when (not= ledger (:ledger transfer))
+           _ (when (not= ledger (:ledger credit-account))
                (return :transfer-must-have-the-same-ledger-as-accounts))
 
            ; Balancing transfer
@@ -618,6 +692,36 @@
                         (< debit-credits (+ debit-debits+ amount')))
                (return :exceeds-credits))
 
+           ; Balance overflows
+           _ (cond
+               (:pending flags)
+               (cond
+                 (< uint128-max (+ (:debits-pending debit-account) amount'))
+                 (return :overflows-debits-pending)
+
+                 (< uint128-max (+ (:credits-pending credit-account) amount'))
+                 (return :overflows-credits-pending))
+
+               ; Single-phase or post-pending transfer
+               (not void?)
+               (cond
+                 (< uint128-max (+ (:debits-posted debit-account) amount'))
+                 (return :overflows-debits-posted)
+
+                 (< uint128-max (+ (:credits-posted credit-account) amount'))
+                 (return :overflows-credits-posted)))
+           _ (when-not void?
+               (cond
+                 (< uint128-max (+ (:debits-pending debit-account)
+                                   (:debits-posted debit-account)
+                                   amount'))
+                 (return :overflows-debits)
+
+                 (< uint128-max (+ (:credits-pending credit-account)
+                                   (:credits-posted credit-account)
+                                   amount'))
+                 (return :overflows-credits)))
+
           ; OK, we're good to go.
           ; What timestamp did the actual system assign this transfer?
           {:keys [id amount flags]} transfer
@@ -625,6 +729,11 @@
                ts
                (bm/get transfer-id->timestamp id))
           _  (assert ts (str "No timestamp known for transfer " id))
+          ; Timeout overflow
+           _ (when (< Long/MAX_VALUE
+                    (+ ts (* (:timeout transfer 0) 1000000000N)))
+               (return :overflows-timeout))
+
           ; Advance our clocks to the new timestamp
           this' (advance-transfer-timestamp this ts)
           _     (when (inconsistent? this') (return this'))
@@ -639,6 +748,16 @@
                           :amount amount')
           ; Record transfer
           transfers' (bm/put transfers id transfer)
+          ; And if we updated a pending transfer...
+          transfers' (if pending
+                       (let [pending'
+                             (assoc pending :state
+                                    (cond void? :voided
+                                          post? :posted
+                                          true  (assert false "unreachable")))]
+                         (bm/put transfers' pending-id pending'))
+                       ; Nothing pending
+                       transfers')
 
           ; Update accounts
           accounts'
