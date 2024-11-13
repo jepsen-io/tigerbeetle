@@ -111,6 +111,10 @@
                       (gen/sleep 10)
                       (gen/time-limit (:final-time-limit opts)
                                       (gen/clients fg)))
+                    generator)
+        ; And wrap entire generator so we can track state.
+        generator (if-let [w (:wrap-generator workload)]
+                    (w generator)
                     generator)]
     (merge tests/noop-test
            opts
@@ -135,7 +139,7 @@
   "Command-line option specification"
   [
    ["-b" "--version VERSION" "The TigerBeetle version to install"
-    :default "0.16.11"]
+    :default "0.16.12"]
 
    [nil "--final-time-limit SECONDS" "How long should we run the final generator for, at most? In seconds."
     :default  200
