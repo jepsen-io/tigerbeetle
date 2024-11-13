@@ -115,6 +115,11 @@
   [model invoke-val ok-val]
   (step* :lookup-accounts model invoke-val ok-val))
 
+(defn lt-step
+  "Shorthand for a lookup-transfers step."
+  [model invoke-val ok-val]
+  (step* :lookup-transfers model invoke-val ok-val))
+
 (defn consistent?
   "Not inconsistent?"
   [model]
@@ -138,16 +143,16 @@
                          (assoc a2 :flags #{:linked})
                          (assoc a3 :flags #{:linked})]))))))
 
-(deftest transfer-flags-error-test
+(deftest create-transfer-flags-error-test
   (testing "nonconflicting"
-    (are [flags] (nil? (transfer-flags-error flags))
+    (are [flags] (nil? (create-transfer-flags-error flags))
          nil
          #{}
          #{:pending}
          #{:balancing-credit :balancing-debit}
          #{:imported :post-pending-transfer}))
   (testing "conflicting"
-    (are [flags] (transfer-flags-error flags)
+    (are [flags] (create-transfer-flags-error flags)
          #{:pending :post-pending-transfer}
          #{:post-pending-transfer :closing-credit :balancing-credit}
          #{:balancing-debit :void-pending-transfer})))
@@ -969,3 +974,18 @@
                         (t 4N a2 a1 5N #{:pending})
                         (t 5N a2 a1 5N)]
                        [:ok :ok :ok :ok :exceeds-debits]))))))
+
+(deftest lookup-transfers-test
+  (let [t3 (t 3N a1 a2 10N #{:pending})
+        t4 (t 4N a2 a1 5N)]
+    (is (consistent?
+          (-> init1
+              (ct-step [t3 t4]
+                       [:ok :ok])
+              (lt-step [3N 4N]
+                       [(assoc t3
+                               :timestamp 203
+                               )
+                        (assoc t4
+                               :timestamp 204
+                               )]))))))

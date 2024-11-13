@@ -16,13 +16,15 @@
   this because our histories *always* require a complete read of every account
   and transfer."
   (:require [bifurcan-clj [core :as b]
-                          [list :as bl]
-                          [map :as bm]
-                          [set :as bs]
-                          [util :refer [iterable=]]]
-            [clojure [datafy :refer [datafy]]
-                     [pprint :refer [pprint]]
-                     [set :as set]]
+             [list :as bl]
+             [map :as bm]
+             [set :as bs]
+             [util :refer [iterable=]]]
+            [clojure
+             [data :refer [diff]]
+             [datafy :refer [datafy]]
+             [pprint :refer [pprint]]
+             [set :as set]]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [letr loopr]]
             [jepsen.history :as h]
@@ -91,6 +93,13 @@
                           operations succeed or fail as a unit. Returns
                           [model', results']")
 
+  (read-account [model id]
+                "Reads an account by ID, returning account or nil.")
+
+  (read-transfer [model id]
+                 "Reads a transfer by ID, returning transfer or nil.")
+
+  ; API operations
   (create-accounts [model invoke ok]
                    "Applies a single create-accounts operation to the model,
                    returning model'")
@@ -99,12 +108,13 @@
                     "Applies a single create-transfers operation to the model,
                     returning model'")
 
-  (read-account [model id]
-                "Reads an account by ID, returning account or nil.")
-
   (lookup-accounts [model invoke ok]
                    "Applies a single lookup-accounts operation to the model,
-                   returning model'"))
+                   returning model'")
+
+  (lookup-transfers [model invoke ok]
+                    "Applies a single lookup-transfers operation to the model,
+                    returning model'"))
 
 (def timestamp-upper-bound
   "One bigger than the biggest timestamp for an imported event (2^63)"
@@ -281,17 +291,61 @@
    :closing-credit #{:post-pending-transfer
                      :void-pending-transfer}})
 
-(defn transfer-flags-error
+(defn create-transfer-flags-error
   "Takes transfer flags. Returns :flag-are-mutually-exclusive if it has
   mutually exclusive flags, else nil."
   [flags]
   ; See https://docs.tigerbeetle.com/reference/requests/create_transfers/#flags_are_mutually_exclusive
   (loopr []
          [flag flags]
-    (let [conflicts (set/intersection flags (conflicting-transfer-flags flag))]
-      (if (empty? conflicts)
-        (recur)
-        :flags-are-mutually-exclusive))))
+         (let [conflicts (set/intersection flags (conflicting-transfer-flags flag))]
+           (if (empty? conflicts)
+             (recur)
+             :flags-are-mutually-exclusive))))
+
+(defn create-transfer-extant-error
+  "Checks for several possible errors involving an extant copy of a transfer.
+  Returns an error keyword or nil."
+  [{:keys [flags pending-id timeout credit-account-id debit-account-id amount
+           user-data ledger code] :as transfer}
+   extant]
+  (cond
+    (nil? extant)
+    nil
+
+    ; See
+    ; https://docs.tigerbeetle.com/reference/requests/create_transfers/#exists
+    ; -- we probably have to be more particular about
+    ; balancing/post-pending transfers
+    (not= flags (:flags extant))
+    :exists-with-different-flags
+
+    (not= (or pending-id 0) (:pending-id extant 0))
+    :exists-with-different-pending-id
+
+    (not= timeout (:timeout extant))
+    :exists-with-different-timeout
+
+    (not= credit-account-id (:credit-account-id extant))
+    :exists-with-different-credit-account-id
+
+    (not= debit-account-id (:debit-account-id extant))
+    :exists-with-different-debit-account-id
+
+    (not= amount (:amount extant))
+    :exists-with-different-amount
+
+    (not= user-data (:user-data extant))
+    :exists-with-different-user-data-128
+
+    (not= ledger (:ledger extant))
+    :exists-with-different-ledger
+
+    (not= code (:code extant))
+    :exists-with-different-code
+
+    true
+    :exists))
 
 (defn transfer-update-account
   "Called to update a single account for a transfer. Take an account, a mode
@@ -343,7 +397,7 @@
    accounts  ; A map of account IDs to accounts
    transfers ; A map of transfer IDs to transfers
    errors    ; A map of permanent errors (TigerBeetle calls these *transient*
-             ; errors, but they persist forever
+   ; errors, but they persist forever
    ]
 
   ITB
@@ -492,46 +546,12 @@
                (return :id-must-not-be-int-max))
 
            ; Pre-existing error
-           _ (when-let [err (transfer-flags-error flags)]
+           _ (when-let [err (create-transfer-flags-error flags)]
                (return err))
 
            ; Extant checks
-          _ (when extant
-              (return
-                (cond
-                  ; See
-                  ; https://docs.tigerbeetle.com/reference/requests/create_transfers/#exists
-                  ; -- we probably have to be more particular about
-                  ; balancing/post-pending transfers
-                  (not= flags (:flags extant))
-                  :exists-with-different-flags
-
-                  (not= pending-id (:pending-id extant 0))
-                  :exists-with-different-pending-id
-
-                  (not= (:timeout transfer) (:timeout extant))
-                  :exists-with-different-timeout
-
-                  (not= credit-account-id (:credit-account-id extant))
-                  :exists-with-different-credit-account-id
-
-                  (not= debit-account-id (:debit-account-id extant))
-                  :exists-with-different-debit-account-id
-
-                  (not= amount (:amount extant))
-                  :exists-with-different-amount
-
-                  (not= user-data (:user-data extant))
-                  :exists-with-different-user-data-128
-
-                  (not= ledger (:ledger extant))
-                  :exists-with-different-ledger
-
-                  (not= code (:code extant))
-                  :exists-with-different-code
-
-                  true
-                  :exists)))
+           _ (when-let [err (create-transfer-extant-error transfer extant)]
+               (return err))
 
            ; Import checks
            imported? (:imported flags)
@@ -620,7 +640,7 @@
 
                  (= :voided (:state pending))
                  (return :pending-transfer-already-voided)
-               ))
+                 ))
 
            _ (when (not pending)
                (cond
@@ -722,58 +742,58 @@
                                    amount'))
                  (return :overflows-credits)))
 
-          ; OK, we're good to go.
-          ; What timestamp did the actual system assign this transfer?
-          {:keys [id amount flags]} transfer
-          ts (if imported?
-               ts
-               (bm/get transfer-id->timestamp id))
-          _  (assert ts (str "No timestamp known for transfer " id))
-          ; Timeout overflow
+           ; OK, we're good to go.
+           ; What timestamp did the actual system assign this transfer?
+           {:keys [id amount flags]} transfer
+           ts (if imported?
+                ts
+                (bm/get transfer-id->timestamp id))
+           _  (assert ts (str "No timestamp known for transfer " id))
+           ; Timeout overflow
            _ (when (< Long/MAX_VALUE
-                    (+ ts (* (:timeout transfer 0) 1000000000N)))
+                      (+ ts (* (:timeout transfer 0) 1000000000N)))
                (return :overflows-timeout))
 
-          ; Advance our clocks to the new timestamp
-          this' (advance-transfer-timestamp this ts)
-          _     (when (inconsistent? this') (return this'))
-          this' (if imported?
-                  this'
-                  (advance-timestamp this' ts))
-          _     (when (inconsistent? this') (return this'))
+           ; Advance our clocks to the new timestamp
+           this' (advance-transfer-timestamp this ts)
+           _     (when (inconsistent? this') (return this'))
+           this' (if imported?
+                   this'
+                   (advance-timestamp this' ts))
+           _     (when (inconsistent? this') (return this'))
 
-          ; Fill in transfer
-          transfer (assoc transfer
-                          :timestamp ts
-                          :amount amount')
-          ; Record transfer
-          transfers' (bm/put transfers id transfer)
-          ; And if we updated a pending transfer...
-          transfers' (if pending
-                       (let [pending'
-                             (assoc pending :state
-                                    (cond void? :voided
-                                          post? :posted
-                                          true  (assert false "unreachable")))]
-                         (bm/put transfers' pending-id pending'))
-                       ; Nothing pending
-                       transfers')
+           ; Fill in transfer
+           transfer (assoc transfer
+                           :timestamp ts
+                           :amount amount')
+           ; Record transfer
+           transfers' (bm/put transfers id transfer)
+           ; And if we updated a pending transfer...
+           transfers' (if pending
+                        (let [pending'
+                              (assoc pending :state
+                                     (cond void? :voided
+                                           post? :posted
+                                           true  (assert false "unreachable")))]
+                          (bm/put transfers' pending-id pending'))
+                        ; Nothing pending
+                        transfers')
 
-          ; Update accounts
-          accounts'
-          (-> accounts
-              (bm/update debit-account-id
-                         transfer-update-account
-                         :debit
-                         (:amount pending)
-                         amount'
-                         flags)
-              (bm/update credit-account-id
-                         transfer-update-account
-                         :credit
-                         (:amount pending)
-                         amount'
-                         flags))]
+           ; Update accounts
+           accounts'
+           (-> accounts
+               (bm/update debit-account-id
+                          transfer-update-account
+                          :debit
+                          (:amount pending)
+                          amount'
+                          flags)
+               (bm/update credit-account-id
+                          transfer-update-account
+                          :credit
+                          (:amount pending)
+                          amount'
+                          flags))]
       (assoc this'
              :accounts accounts'
              :transfers transfers')))
@@ -794,6 +814,9 @@
     ; TODO: compute balances
     (bm/get accounts id))
 
+  (read-transfer [this id]
+    (bm/get transfers id))
+
   (lookup-accounts [this invoke ok]
     (let [ids    (:value invoke)
           actual (:value ok)
@@ -812,15 +835,40 @@
                  :op'       ok
                  :id        id
                  :expected  expected
-                 :actual    actual})))))))
+                 :actual    actual
+                 :diff      (let [[- +] (diff expected actual)]
+                              {:expected -, :actual +})})))))))
+
+  (lookup-transfers [this invoke ok]
+    (let [ids     (:value invoke)
+          actual  (:value ok)
+          n       (count ids)]
+      (loop [i 0]
+        (if (= i n)
+          this
+          (let [id      (nth ids i)
+                actual  (nth actual i)
+                expected (read-transfer this id)]
+            (if (= expected actual)
+              (recur (inc i))
+              (inconsistent
+                {:type     :model
+                 :op       invoke
+                 :op'      ok
+                 :id       id
+                 :expected expected
+                 :actual   actual
+                 :diff     (let [[- +] (diff expected actual)]
+                             {:expected -, :actual +})})))))))
 
   IModel
   (step [this invoke ok]
-        (case (:f invoke)
-          :create-accounts  (create-accounts this invoke ok)
-          :create-transfers (create-transfers this invoke ok)
-          :lookup-accounts  (lookup-accounts this invoke ok)
-        )))
+    (case (:f invoke)
+      :create-accounts  (create-accounts this invoke ok)
+      :create-transfers (create-transfers this invoke ok)
+      :lookup-accounts  (lookup-accounts this invoke ok)
+      :lookup-transfers (lookup-transfers this invoke ok)
+      )))
 
 (defn init
   "Constructs an initial model state. Takes two Bifurcan maps of account ID ->

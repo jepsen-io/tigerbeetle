@@ -113,5 +113,8 @@
                     :op'      (h 3)
                     :id       2N
                     :expected a2'
-                    :actual   (assoc a2' :ledger 1)}}
+                    :actual   (assoc a2' :ledger 1)
+                    :diff
+                    {:expected {:ledger 2}
+                     :actual   {:ledger 1}}}}
            r))))
