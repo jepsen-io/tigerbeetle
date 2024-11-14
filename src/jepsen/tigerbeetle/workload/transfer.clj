@@ -92,7 +92,8 @@
             [jepsen.tigerbeetle.workload [generator :refer [final-gen
                                                             gen
                                                             wrap-gen]]]
-            [potemkin :refer [definterface+]]))
+            [potemkin :refer [definterface+]]
+            [slingshot.slingshot :refer [try+ throw+]]))
 
 (defrecord Client [conn]
   client/Client
@@ -102,9 +103,15 @@
   (setup! [this test])
 
   (invoke! [this test op]
-    (case (:f op)
-      :create-accounts
-      (assoc op :type :ok, :value (c/create-accounts! conn (:value op)))))
+    (try+
+      (case (:f op)
+        :create-accounts
+        (assoc op :type :ok, :value (c/create-accounts! conn (:value op)))
+
+        :lookup-accounts
+        (assoc op :type :ok, :value (c/lookup-accounts conn (:value op))))
+      (catch [:type :timeout] e
+        (assoc op :type :info, :value nil, :error :timeout))))
 
   (teardown! [this test])
 
@@ -118,4 +125,4 @@
    :generator       (gen)
    :final-generator (final-gen)
    :wrap-generator  wrap-gen
-   :checker         checker/unbridled-optimism})
+   :checker         (checker/unbridled-optimism)})

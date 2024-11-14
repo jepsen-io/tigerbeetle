@@ -1,6 +1,8 @@
 (ns jepsen.tigerbeetle.client
   "Wrapper for the Java TigerBeetle client."
-  (:require [clojure [datafy :refer [datafy]]]
+  (:require [bifurcan-clj [core :as b]
+                          [map :as bm]]
+            [clojure [datafy :refer [datafy]]]
             [clojure.core.protocols :refer [Datafiable]]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
@@ -13,6 +15,7 @@
                             Client
                             CreateAccountResult
                             CreateAccountResultBatch
+                            IdBatch
                             UInt128)
            (java.util Arrays)))
 
@@ -68,13 +71,22 @@
          (recur
            (doto b
              (.add)
-             (.setId (UInt128/asBytes id))
+             (.setId (UInt128/asBytes (biginteger id)))
              (.setUserData64 user-data)
              (.setLedger ledger)
              (.setCode code)
              (.setFlags (flags->int flags))
              ;(.setTimestamp timestamp))
              ))))
+
+(defn id-batch
+  "Constructs a new batch of IDs from a vector."
+  [ids]
+  (loopr [b (IdBatch. (count ids))]
+         [id ids]
+         (recur
+           (doto b
+             (.add (UInt128/asBytes (biginteger id)))))))
 
 ; Deserialization
 
@@ -111,27 +123,30 @@
     CreateAccountResult/ReservedFlag                         :reserved-flag
     CreateAccountResult/TimestampMustBeZero                  :timestamp-must-be-zero))
 
+
+(defn account-batch-current->clj
+  "Reads a single Accounts off an AccountBatch, as a Clojure map."
+  [^AccountBatch b]
+  {:id              (bigint (UInt128/asBigInteger (.getId b)))
+   :user-data       (.getUserData64 b)
+   :ledger          (.getLedger b)
+   :code            (.getCode b)
+   :flags           (int->flags (.getFlags b))
+   :timestamp       (.getTimestamp b)
+   :credits-pending (.getCreditsPending b)
+   :credits-posted  (.getCreditsPosted b)
+   :debits-pending  (.getDebitsPending b)
+   :debits-posted   (.getDebitsPosted b)})
+
 (extend-protocol Datafiable
   AccountBatch
   (datafy [b]
-    ; Seek to beginning, just in case someone else read this already
-    (info "request batch has" (.getLength b) "elements")
     (.beforeFirst b)
     (loop [accounts (transient [])]
       (if-not (.next b)
         ; End of batch
         (persistent! accounts)
-        (recur (conj! accounts
-                      {:id              (UInt128/asBigInteger (.getId b))
-                       :user-data       (.getUserData64 b)
-                       :ledger          (.getLedger b)
-                       :code            (.getCode b)
-                       :flags           (int->flags (.getFlags b))
-                       :timestamp       (.getTimestamp b)
-                       :credits-pending (.getCreditsPending b)
-                       :credits-posted  (.getCreditsPosted b)
-                       :debits-pending  (.getDebitsPending b)
-                       :debits-posted   (.getDebitsPosted b)}))))))
+        (recur (conj! accounts (account-batch-current->clj b)))))))
 
 ; Helpers
 
@@ -187,27 +202,43 @@
                   (create-account-result->clj (.getResult res)))
             (recur))))))
 
+(defn deref+
+  "Takes a client and future. Dereferences the future. Throws and closes client
+  on timeout."
+  [client fut]
+  (let [res (deref fut 5000 ::timeout)]
+    (when (identical? res ::timeout)
+      (close! client)
+      (throw+ {:type :timeout}))
+    res))
+
 (defn create-accounts!
-  "Takes a client and a vector of account maps."
+  "Takes a client and a vector of account maps. Returns a vector of result
+  keywords."
   [^Client c, accounts]
-  ;(info "submitting" (datafy (account-batch accounts)))
-  ; This will deadlock
-  (let [req (account-batch accounts)]
-    (create-account-result-batch->clj
-      req
-      (.createAccounts c req)))
-  ; Doing this directly puts us into nonterminating/segfault territory
-  #_(timeout 5000 (throw+ {:type :timeout})
-           (datafy (.createAccounts c (account-batch accounts))))
-  ; We can also try the async version. This *also* segfaults on calls to
-  ; .close().
-  #_(let [f (.createAccountsAsync c (account-batch accounts))
-        _ (info "Called createAccountsAsync; asking for results")
-        r (deref f 60000 ::timeout)]
-    (info "Results are" r)
-    (if (identical? r ::timeout)
-      (do (info "Closing client due to timeout.")
-          (close! c)
-          (info "Client closed, throwing")
-          (throw+ {:type :timeout}))
-      r)))
+  (let [req (account-batch accounts)
+        res (deref+ c (.createAccountsAsync c req))]
+    (create-account-result-batch->clj req res)))
+
+(defn account-batch->clj
+  "Converts an account batch to a Clojure vector. Takes the vector of IDs
+  responsible for producing this response: an IDBatch. Guarantees the result
+  vector is 1:1 with the ID vector."
+  [ids ^AccountBatch res]
+  ; Rewind
+  (.beforeFirst res)
+  ; Convert results to a map of id->account
+  (let [res (loop [out (b/linear bm/empty)]
+              (if-not (.next res)
+                out
+                ; TODO: check to ensure all are identical
+                (let [a (account-batch-current->clj res)]
+                  (recur (bm/put out (:id a) a)))))]
+    (mapv (partial bm/get res) ids)))
+
+(defn lookup-accounts
+  "Takes a client and a vector of IDs. Returns a vector of account maps."
+   [^Client c, ids]
+   (let [req (id-batch ids)
+         res  (deref+ c (.lookupAccountsAsync c req))]
+     (account-batch->clj ids res)))

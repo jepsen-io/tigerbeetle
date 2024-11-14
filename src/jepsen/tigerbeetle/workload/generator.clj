@@ -47,11 +47,14 @@
 
   (saw-accounts [state accounts]
                  "Updates the state to acknowledge that we have positively
-                 observed a series of accounts."))
+                 observed a series of accounts.")
+
+  (gen-lookup-accounts [state n]
+                       "Draws a vector of n account IDs that we might want to look up."))
 
 (defrecord State
   [
-   ^long next-id  ; The next ID we'll hand out
+   next-id        ; The next ID we'll hand out
    accounts       ; A Bifurcan map of id->account
    transfers      ; A Bifurcan map of id->transfer
    ; A Bifurcan set of account IDs we may have created, but haven't seen yet.
@@ -71,14 +74,19 @@
                 :flags     #{}})
              ids)))
 
-  (add-new-accounts [this accounts]
-    (let [ids (mapv :id accounts)]
+  (add-new-accounts [this new-accounts]
+    (let [ids (mapv :id new-accounts)]
       (assoc this
              :next-id (inc (reduce max next-id ids))
              :unseen-accounts (b/forked
                                 (reduce bs/add
-                                       (b/linear unseen-accounts)
-                                       ids)))))
+                                        (b/linear unseen-accounts)
+                                        ids))
+             :accounts (b/forked
+                                (reduce (fn [m a]
+                                          (bm/put m (:id a) a))
+                                       (b/linear accounts)
+                                       new-accounts)))))
 
   (saw-accounts [this accounts]
     (assoc this
@@ -86,13 +94,27 @@
            (b/forked
              (reduce bs/remove
                      (b/linear unseen-accounts)
-                     (mapv :id accounts))))))
+                     (mapv :id accounts)))))
+
+  (gen-lookup-accounts [this n]
+    (let [m (b/size accounts)]
+      (if (zero? m)
+        []
+        (loop [ids (transient [])
+               i 0]
+          (if (= i n)
+            (persistent! ids)
+            ; TODO: pick a better distribution
+            (recur (conj! ids (-> accounts
+                                  (b/nth (dg/long 0 m))
+                                  bm/key))
+                   (inc i))))))))
 
 (defn state
   "A fresh state."
   []
   (map->State
-    {:next-id          1
+    {:next-id          1N
      :accounts         bm/empty
      :transfers        bm/empty
      :unseen-accounts  bs/empty
@@ -123,6 +145,12 @@
   {:f     :create-accounts
    :value (gen-new-accounts (:state ctx) (rand-int 4))})
 
+(defn lookup-accounts-gen
+  "A generator for lookup-accounts operations."
+  [test ctx]
+  {:f      :lookup-accounts
+   :value  (gen-lookup-accounts (:state ctx) (rand-int 4))})
+
 (defn wrap-gen
   "Wraps a generator in one that maintains our state."
   [gen]
@@ -134,7 +162,8 @@
   "Generator of events during the main phase"
   []
   (gen/mix
-    [create-accounts-gen]))
+    [create-accounts-gen
+     lookup-accounts-gen]))
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"
@@ -154,7 +183,7 @@
                                      (/ n final-gen-chunk-size))]
         (gen/op
           (map (fn [ids]
-                 {:f :lookup-accounts, :value ids})
+                 {:f :lookup-accounts, :value (vec ids)})
                chunks)
           test
           ctx)))
