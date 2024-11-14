@@ -109,7 +109,10 @@
         (assoc op :type :ok, :value (c/create-accounts! conn (:value op)))
 
         :lookup-accounts
-        (assoc op :type :ok, :value (c/lookup-accounts conn (:value op))))
+        (assoc op :type :ok, :value (c/lookup-accounts conn (:value op)))
+
+        :create-transfers
+        (assoc op :type :ok, :value (c/create-transfers! conn (:value op))))
       (catch [:type :timeout] e
         (assoc op :type :info, :value nil, :error :timeout))))
 

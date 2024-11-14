@@ -38,8 +38,14 @@
 ; corresponding update function add-*, which folds that invocation into the
 ; state when it is actually performed.
 (definterface+ IState
+  (rand-account-id [state]
+                   "Generates a random account ID.")
+
   (gen-new-accounts [state n]
                "Generates a series of n new accounts.")
+
+  (gen-new-transfers [state n]
+                     "Generates a series of n transfers between accounts.")
 
   (add-new-accounts [state accounts]
                     "Called when we invoke create-accounts, to track that these
@@ -64,6 +70,15 @@
    ]
 
   IState
+  (rand-account-id [this]
+    (let [n (b/size accounts)]
+      (if (pos? n)
+        (let [i (dg/long 0 n)]
+          (bm/key (b/nth accounts i)))
+        ; No accounts yet but we can always make one up! A small number has a
+        ; chance to be created soon.
+        (dg/bigint 10))))
+
   (gen-new-accounts [this n]
     (let [ids (range next-id (+ next-id n))]
        (mapv (fn [id]
@@ -73,6 +88,19 @@
                 :user-data (dg/long 0 10)
                 :flags     #{}})
              ids)))
+
+  (gen-new-transfers [this n]
+    (let [ids (range next-id (+ next-id n))]
+      (mapv (fn [id]
+              {:id                id
+               :debit-account-id  (rand-account-id this)
+               :credit-account-id (rand-account-id this)
+               :amount            (dg/long 0 10)
+               :ledger            (dg/long 1 3)
+               :code              (dg/long 1 10)
+               :user-data         (dg/long 0 10)
+               :flags             #{}})
+            ids)))
 
   (add-new-accounts [this new-accounts]
     (let [ids (mapv :id new-accounts)]
@@ -97,18 +125,10 @@
                      (mapv :id accounts)))))
 
   (gen-lookup-accounts [this n]
-    (let [m (b/size accounts)]
-      (if (zero? m)
-        []
-        (loop [ids (transient [])
-               i 0]
-          (if (= i n)
-            (persistent! ids)
-            ; TODO: pick a better distribution
-            (recur (conj! ids (-> accounts
-                                  (b/nth (dg/long 0 m))
-                                  bm/key))
-                   (inc i))))))))
+    (when (pos? (b/size accounts))
+           (->> (repeatedly (partial rand-account-id this))
+             (take n)
+             vec))))
 
 (defn state
   "A fresh state."
@@ -143,13 +163,19 @@
   "A generator for create-accounts operations."
   [test ctx]
   {:f     :create-accounts
-   :value (gen-new-accounts (:state ctx) (rand-int 4))})
+   :value (gen-new-accounts (:state ctx) (dg/long 1 4))})
 
 (defn lookup-accounts-gen
   "A generator for lookup-accounts operations."
   [test ctx]
   {:f      :lookup-accounts
-   :value  (gen-lookup-accounts (:state ctx) (rand-int 4))})
+   :value  (gen-lookup-accounts (:state ctx) (dg/long 1 4))})
+
+(defn create-transfers-gen
+  "A generator for create-transfers operations."
+  [test ctx]
+  {:f     :create-transfers
+   :value (gen-new-transfers (:state ctx) (dg/long 1 4))})
 
 (defn wrap-gen
   "Wraps a generator in one that maintains our state."
@@ -163,6 +189,7 @@
   []
   (gen/mix
     [create-accounts-gen
+     create-transfers-gen
      lookup-accounts-gen]))
 
 (def final-gen-chunk-size
