@@ -68,6 +68,8 @@
     (let [h (h/history [])
           r (check h)]
       (is (= {:valid? true
+              :stats {:create-account-results {}
+                      :create-transfer-results {}}
               :error-types #{}}
              r))))
 
@@ -79,6 +81,8 @@
                (o 3 1 :ok     :lookup-accounts [a1' a2'] 200)])
           r (check h)]
       (is (= {:valid? true
+              :stats {:create-account-results {:ok 2}
+                      :create-transfer-results {}}
               :error-types #{}}
              r)))))
 
@@ -92,6 +96,9 @@
         r (check h)]
     (is (= {:valid? false
             :error-types #{:model}
+            :stats {:create-account-results {:ok 1
+                                             :ledger-must-not-be-zero 1}
+                    :create-transfer-results {}}
             :model {:op       (h 0)
                     :op'      (h 1)
                     :account  a2
@@ -109,6 +116,8 @@
         r (check h)]
     (is (= {:valid? false
             :error-types #{:model}
+            :stats {:create-account-results {:ok 2}
+                    :create-transfer-results {}}
             :model {:op       (h 2)
                     :op'      (h 3)
                     :id       2N
