@@ -65,7 +65,8 @@
                           [map :as bm]
                           [set :as bs]]
             [dom-top.core :refer [loopr]]
-            [jepsen [history :as h]]
+            [jepsen [checker :as checker]
+                    [history :as h]]
             [jepsen.tigerbeetle [model :as model]]
             [tesser.core :as t])
   (:import (jepsen.history Op)))
@@ -268,7 +269,10 @@
   ; TODO: precompile this as a bitset
   (h/map (fn [op]
            (if (identical? (:type op) :info)
-             (assoc op :type (if (op-actually-ok? ok-accounts ok-transfers op)
+             (assoc op :type (if (op-actually-ok? history
+                                                  ok-accounts
+                                                  ok-transfers
+                                                  op)
                                :ok
                                :fail))
              op))
@@ -304,6 +308,29 @@
            ; OK
            nil)))
 
+(defn stats
+  "Folds over the history, gathering basic statistics. We return:
+
+    {:create-transfer-results     A map of result frequencies for
+                                  create-transfers
+     :create-account-results      A map of result frequencies for
+                                  create-accounts}"
+  [history]
+  (let [create-account-results
+        (->> (t/filter (h/has-f? :create-accounts))
+             (t/mapcat :value)
+             t/frequencies)
+
+        create-transfer-results
+        (->> (t/filter (h/has-f? :create-transfers))
+             (t/mapcat :value)
+             t/frequencies)]
+    (->> (t/filter h/ok?)
+         (t/fuse
+           {:create-account-results create-account-results
+            :create-transfer-results create-transfer-results})
+         (h/tesser history))))
+
 (defn analysis
   "Analyzes a history, gluing together all the various data structures we
   need."
@@ -331,11 +358,14 @@
                             (model-check {:history h
                                           :account-id->timestamp ait
                                           :transfer-id->timestamp tit}))
+        stats (h/task history stats []
+                      (stats history))
         ; Build error map
         errors (merge (sorted-map)
                       @model-check)
         ]
     (merge errors
+           {:stats @stats}
            {:error-types (into (sorted-set) (keys errors))})))
 
 (defn check
@@ -344,3 +374,13 @@
   (let [a (analysis history)]
     (-> a
         (assoc :valid? (empty? (:error-types a))))))
+
+(defrecord Checker []
+  checker/Checker
+  (check [this test history opts]
+    (check history)))
+
+(defn checker
+  "Constructs a new TigerBeetle checker."
+  []
+  (Checker.))

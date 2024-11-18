@@ -88,7 +88,8 @@
                     [client :as client]
                     [generator :as gen]
                     [util :refer [timeout]]]
-            [jepsen.tigerbeetle.client :as c]
+            [jepsen.tigerbeetle [client :as c]
+                                [checker :as tigerbeetle.checker]]
             [jepsen.tigerbeetle.workload [generator :refer [final-gen
                                                             gen
                                                             wrap-gen]]]
@@ -102,17 +103,20 @@
 
   (setup! [this test])
 
-  (invoke! [this test op]
+  (invoke! [this test {:keys [f value] :as op}]
     (try+
-      (case (:f op)
+      (case f
         :create-accounts
-        (assoc op :type :ok, :value (c/create-accounts! conn (:value op)))
+        (merge op {:type :ok} (c/create-accounts! conn value))
 
         :lookup-accounts
-        (assoc op :type :ok, :value (c/lookup-accounts conn (:value op)))
+        (merge op {:type :ok} (c/lookup-accounts conn value))
 
         :create-transfers
-        (assoc op :type :ok, :value (c/create-transfers! conn (:value op))))
+        (merge op {:type :ok} (c/create-transfers! conn value))
+
+        :lookup-transfers
+        (merge op {:type :ok} (c/lookup-transfers conn value)))
       (catch [:type :timeout] e
         (assoc op :type :info, :value nil, :error :timeout))))
 
@@ -128,4 +132,4 @@
    :generator       (gen)
    :final-generator (final-gen)
    :wrap-generator  wrap-gen
-   :checker         (checker/unbridled-optimism)})
+   :checker         (tigerbeetle.checker/checker)})

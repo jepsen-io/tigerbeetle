@@ -5,7 +5,8 @@
             [camel-snake-kebab.core :refer [->kebab-case-keyword
                                            ->PascalCase
                                            ->SCREAMING_SNAKE_CASE]]
-            [clojure [datafy :refer [datafy]]]
+            [clojure [datafy :refer [datafy]]
+                     [pprint :refer [pprint]]]
             [clojure.core.protocols :refer [Datafiable]]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
@@ -15,6 +16,7 @@
             [slingshot.slingshot :refer [try+ throw+]])
   (:import (com.tigerbeetle AccountFlags
                             AccountBatch
+                            Batch
                             Client
                             CreateAccountResult
                             CreateAccountResultBatch
@@ -110,7 +112,7 @@
   "Turns a packed int into a set of transfer flags."
   [^long flags]
   (loopr [s (transient #{})]
-         [[kw-flag int-flag] transfer-flags->int]
+         [[kw-flag int-flag] transfer-flag->int]
          (recur
            (if (= 0 (bit-and flags int-flag))
              s
@@ -172,7 +174,7 @@
          (do (doto b
                (.add)
                (.setId (bigint->bytes id))
-               (.setDebitAccountId (bigint->bytes debit-account-id))
+               (.setDebitAccountId  (bigint->bytes debit-account-id))
                (.setCreditAccountId (bigint->bytes credit-account-id))
                (.setAmount (biginteger amount))
                (.setLedger ledger)
@@ -197,7 +199,7 @@
 ; Deserialization
 
 (defn account-batch-current->clj
-  "Reads a single Accounts off an AccountBatch, as a Clojure map."
+  "Reads a single account map off an AccountBatch"
   [^AccountBatch b]
   {:id              (bigint (UInt128/asBigInteger (.getId b)))
    :user-data       (.getUserData64 b)
@@ -209,6 +211,21 @@
    :credits-posted  (.getCreditsPosted b)
    :debits-pending  (.getDebitsPending b)
    :debits-posted   (.getDebitsPosted b)})
+
+(defn transfer-batch-current->clj
+  "Reads a single transfer map off a TransferBatch"
+  [^TransferBatch b]
+  {:id                 (bigint (UInt128/asBigInteger (.getId b)))
+   :debit-account-id   (bigint (UInt128/asBigInteger (.getDebitAccountId b)))
+   :credit-account-id  (bigint (UInt128/asBigInteger (.getCreditAccountId b)))
+   :pending-id         (bigint (UInt128/asBigInteger (.getPendingId b)))
+   :amount             (bigint (.getAmount b))
+   :user-data          (.getUserData64 b)
+   :ledger             (.getLedger b)
+   :code               (.getCode b)
+   :flags              (int->transfer-flags (.getFlags b))
+   :timeout            (.getTimeout b)
+   :timestamp          (.getTimestamp b)})
 
 (extend-protocol Datafiable
   AccountBatch
@@ -280,11 +297,11 @@
   those operations that succeeded."
   [^TransferBatch req, ^CreateTransferResultBatch res]
   (.beforeFirst res)
-  (let [n (.getLength req)
+  (let [n   (.getLength req)
         ary (object-array n)]
     (Arrays/fill ary :ok)
     (loop []
-      (if-not (.next req)
+      (if-not (.next res)
         ; End of batch, return vector
         (vec ary)
         (do (aset ary
@@ -303,40 +320,75 @@
     res))
 
 (defn create-accounts!
-  "Takes a client and a vector of account maps. Returns a vector of result
-  keywords."
+  "Takes a client and a vector of account maps. Returns
+
+    {:timestamp The server timestamp for this write
+     :value     A vector of result keywords.}"
   [^Client c, accounts]
   (let [req (account-batch accounts)
         res (deref+ c (.createAccountsAsync c req))]
-    (create-account-result-batch->clj req res)))
+    {:timestamp (System/nanoTime)
+     :value     (create-account-result-batch->clj req res)}))
 
 (defn create-transfers!
-  "Takes a client and a vector of transfer maps. Returns a vector of result
-  keywords."
+  "Takes a client and a vector of transfer maps. Returns
+
+    {:timestamp The server timestamp for this write
+     :value     A vector of result keywords.}"
   [^Client c, transfers]
   (let [req (transfer-batch transfers)
         res (deref+ c (.createTransfersAsync c req))]
-    (create-transfer-result-batch->clj req res)))
+    {:timestamp (System/nanoTime)
+     :value     (create-transfer-result-batch->clj req res)}))
+
+(defn index-batch
+  "Takes a batch and a function which reads off the current element of the
+  batch as a map with an :id field. Returns a Bifurcan map of id -> element"
+  [read-element ^Batch b]
+  ; Rewind
+  (.beforeFirst b)
+  ; Convert results to a map of id->account
+  (loop [index (b/linear bm/empty)]
+    (if-not (.next b)
+      index
+      ; TODO: check to ensure all are identical
+      (let [e (read-element b)]
+        (recur (bm/put index (:id e) e))))))
 
 (defn account-batch->clj
   "Converts an account batch to a Clojure vector. Takes the vector of IDs
-  responsible for producing this response: an IDBatch. Guarantees the result
-  vector is 1:1 with the ID vector."
+  responsible for producing this response. Guarantees the result vector is 1:1
+  with the ID vector."
   [ids ^AccountBatch res]
-  ; Rewind
-  (.beforeFirst res)
-  ; Convert results to a map of id->account
-  (let [res (loop [out (b/linear bm/empty)]
-              (if-not (.next res)
-                out
-                ; TODO: check to ensure all are identical
-                (let [a (account-batch-current->clj res)]
-                  (recur (bm/put out (:id a) a)))))]
-    (mapv (partial bm/get res) ids)))
+  (mapv (partial bm/get (index-batch account-batch-current->clj res))
+        ids))
+
+(defn transfer-batch->clj
+  "Converts a transfer batch to a CLojure vector. Takes the vector of IDs
+  responsible for producing this response. Guarantees the result vector is 1:1
+  with the ID vector."
+  [ids ^TransferBatch res]
+  (mapv (partial bm/get (index-batch transfer-batch-current->clj res))
+        ids))
 
 (defn lookup-accounts
-  "Takes a client and a vector of IDs. Returns a vector of account maps."
+  "Takes a client and a vector of IDs. Returns
+
+    {:timestamp The server timestamp for the operation
+     :value     A vector of account maps.}"
    [^Client c, ids]
    (let [req (id-batch ids)
          res  (deref+ c (.lookupAccountsAsync c req))]
-     (account-batch->clj ids res)))
+     {:timestamp (System/nanoTime)
+      :value     (account-batch->clj ids res)}))
+
+(defn lookup-transfers
+  "Takes a client and a vector of transfer IDs. Returns
+
+    {:timestamp The server timestamp for this operation
+     :value     A vector of transfer maps.}"
+  [^Client c, ids]
+  (let [req (id-batch ids)
+        res (deref+ c (.lookupTransfersAsync c req))]
+    {:timestamp (System/nanoTime)
+     :value     (transfer-batch->clj ids res)}))
