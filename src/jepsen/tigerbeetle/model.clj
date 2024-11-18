@@ -365,6 +365,25 @@
     true
     :exists))
 
+(defn create-transfer-*-account-id-error
+  "Validates debit and credit account IDs on a transfer."
+  [credit-account-id debit-account-id]
+  (cond
+    (= 0N credit-account-id)
+    :credit-account-id-must-not-be-zero
+
+    (= 0N debit-account-id)
+    :debit-account-id-must-not-be-zero
+
+    (= uint128-max credit-account-id)
+    :credit-account-id-must-not-be-int-max
+
+    (= uint128-max debit-account-id)
+    :debit-account-id-must-not-be-int-max
+
+    (= credit-account-id debit-account-id)
+    :accounts-must-be-different))
+
 (defn transfer-update-account
   "Called to update a single account for a transfer. Take an account, a mode
   (:debit or :credit), an amount, and the transfer flags."
@@ -557,7 +576,7 @@
                    ledger
                    code]} transfer
            extant (bm/get transfers id)
-           pending-id (:pending-id transfer 0)
+           pending-id (:pending-id transfer 0N)
 
            ; Did this already fail?
            _ (when-let [error (bm/get errors id)]
@@ -688,22 +707,16 @@
                                  credit-account-id)
            debit-account-id (or (:debit-account-id pending)
                                 debit-account-id)
-           _ (when (= 0N credit-account-id)
-               (return :credit-account-id-must-not-be-zero))
-           _ (when (= 0N debit-account-id)
-               (return :debit-account-id-must-not-be-zero))
-           _ (when (= uint128-max credit-account-id)
-               (return :credit-account-id-must-not-be-int-max))
-           _ (when (= uint128-max debit-account-id)
-               (return :debit-account-id-must-not-be-int-max))
-           _ (when (= credit-account-id debit-account-id)
-               (return :accounts-must-be-different))
+           _ (when-let [err (create-transfer-*-account-id-error
+                              credit-account-id
+                              debit-account-id)]
+               (return err))
 
            ; Fetch accounts
-           credit-account (or (bm/get accounts credit-account-id)
-                              (return :credit-account-not-found))
            debit-account (or (bm/get accounts debit-account-id)
                              (return :debit-account-not-found))
+           credit-account (or (bm/get accounts credit-account-id)
+                              (return :credit-account-not-found))
 
            ; Same-value constraints
            _ (when (not= (:ledger credit-account)
@@ -789,7 +802,9 @@
            ; Fill in transfer
            transfer (assoc transfer
                            :timestamp ts
-                           :amount amount')
+                           :amount amount'
+                           :pending-id pending-id
+                           :timeout    (:timeout transfer 0))
            ; Record transfer
            transfers' (bm/put transfers id transfer)
            ; And if we updated a pending transfer...

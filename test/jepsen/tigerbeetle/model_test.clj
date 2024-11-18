@@ -60,7 +60,9 @@
     :user-data         i
     :ledger            1
     :code              i
-    :flags             flags}))
+    :flags             flags
+    :pending-id        0N
+    :timeout           0}))
 
 (def ttsm
   "A simple map of ID->timestamp for transfers"
@@ -122,24 +124,32 @@
   (step* :lookup-transfers model invoke-val ok-val))
 
 (defn consistent?
-  "Not inconsistent?"
+  "Not inconsistent? Returns consistent models."
   [model]
   (not (inconsistent? model)))
+
+(defmacro check-consistent
+  "Asserts that a model is consistent, and returns it. Just a macro so we get
+  easier line numbers from tests."
+  [model]
+  `(let [m# ~model]
+     (is (consistent? m#))
+     m#))
 
 (deftest stats-test
   (testing "lookups"
     (is (= {:op-count 1
             :event-count 3}
-           (stats (la-step init0 [1N 2N 3N] [nil nil nil]))
-           (stats (lt-step init0 [1N 2N 3N] [nil nil nil])))))
+           (stats (check-consistent (la-step init0 [1N 2N 3N] [nil nil nil])))
+           (stats (check-consistent (lt-step init0 [1N 2N 3N] [nil nil nil]))))))
 
   (testing "creates"
     (is (= {:op-count 1
             :event-count 2}
-           #_(stats (ca-step init0 [a1 a2] [:ok :ok]))
-           (stats (ct-step init0 [(t 3N a1 a2 5N) (t 4N a1 a2 5N)]
-                           [:credit-account-not-found
-                            :credit-account-not-found]))))))
+           (stats (check-consistent (ca-step init0 [a1 a2] [:ok :ok])))
+           (stats (check-consistent (ct-step init0 [(t 3N a1 a2 5N) (t 4N a1 a2 5N)]
+                                        [:debit-account-not-found
+                                         :debit-account-not-found])))))))
 
 (deftest chains-test
   (testing "empty"
