@@ -138,9 +138,6 @@
 (def cli-opts
   "Command-line option specification"
   [
-   ["-b" "--version VERSION" "The TigerBeetle version to install"
-    :default "0.16.12"]
-
    [nil "--final-time-limit SECONDS" "How long should we run the final generator for, at most? In seconds."
     :default  200
     :parse-fn read-string
@@ -169,6 +166,9 @@
     :validate [pos? "Must be a positive number."]]
 
    [nil "--tcpdump" "Dumps traffic to a pcap file."]
+
+   ["-v" "--version VERSION" "The TigerBeetle version to install"
+    :default "0.16.13"]
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword

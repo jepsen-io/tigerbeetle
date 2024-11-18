@@ -327,7 +327,7 @@
   [^Client c, accounts]
   (let [req (account-batch accounts)
         res (deref+ c (.createAccountsAsync c req))]
-    {:timestamp (System/nanoTime)
+    {:timestamp (.getTimestamp (.getHeader res))
      :value     (create-account-result-batch->clj req res)}))
 
 (defn create-transfers!
@@ -338,7 +338,7 @@
   [^Client c, transfers]
   (let [req (transfer-batch transfers)
         res (deref+ c (.createTransfersAsync c req))]
-    {:timestamp (System/nanoTime)
+    {:timestamp (.getTimestamp (.getHeader res))
      :value     (create-transfer-result-batch->clj req res)}))
 
 (defn index-batch
@@ -379,7 +379,7 @@
    [^Client c, ids]
    (let [req (id-batch ids)
          res  (deref+ c (.lookupAccountsAsync c req))]
-     {:timestamp (System/nanoTime)
+     {:timestamp (.getTimestamp (.getHeader res))
       :value     (account-batch->clj ids res)}))
 
 (defn lookup-transfers
@@ -390,5 +390,5 @@
   [^Client c, ids]
   (let [req (id-batch ids)
         res (deref+ c (.lookupTransfersAsync c req))]
-    {:timestamp (System/nanoTime)
+    {:timestamp (.getTimestamp (.getHeader res))
      :value     (transfer-batch->clj ids res)}))

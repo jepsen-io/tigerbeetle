@@ -9,7 +9,7 @@
                  [org.clojure/data.generators "1.1.0"]
                  [jepsen "0.3.7"]
                  [com.aphyr/bifurcan-clj "0.1.3-SNAPSHOT"]
-                 [com.tigerbeetle/tigerbeetle-java "0.16.12"]]
+                 [com.tigerbeetle/tigerbeetle-java "0.16.13"]]
   :repl-options {:init-ns jepsen.tigerbeetle.repl}
   :main jepsen.tigerbeetle.cli
   :jvm-opts ["-server"
