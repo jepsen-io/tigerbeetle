@@ -99,7 +99,9 @@
             :stats {:create-account-results {:ok 1
                                              :ledger-must-not-be-zero 1}
                     :create-transfer-results {}}
-            :model {:op       (h 0)
+            :model {:op-count     0
+                    :event-count  1
+                    :op       (h 0)
                     :op'      (h 1)
                     :account  a2
                     :expected :ok
@@ -118,12 +120,14 @@
             :error-types #{:model}
             :stats {:create-account-results {:ok 2}
                     :create-transfer-results {}}
-            :model {:op       (h 2)
-                    :op'      (h 3)
-                    :id       2N
-                    :expected a2'
-                    :actual   (assoc a2' :ledger 1)
+            :model {:op-count     1
+                    :event-count 3
+                    :op          (h 2)
+                    :op'         (h 3)
+                    :id          2N
+                    :expected    a2'
+                    :actual      (assoc a2' :ledger 1)
                     :diff
-                    {:expected {:ledger 2}
-                     :actual   {:ledger 1}}}}
+                    {:expected   {:ledger 2}
+                     :actual     {:ledger 1}}}}
            r))))
