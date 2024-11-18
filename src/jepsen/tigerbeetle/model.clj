@@ -36,16 +36,22 @@
 (definterface+ IModel
   (step [this invoke ok]
         "Takes a model, an invoke op, and a corresponding OK op. Returns a new
-        model."))
+        model.")
+  (stats [this]
+         "Returns a map of statistics for this model's progress:
 
-(defrecord Inconsistent [message]
+           {:ops    The number of operations applied
+            :events The number of events within operations applied}"))
+
+(defrecord Inconsistent [stats message]
   IModel
-  (step [this invoke ok] this))
+  (step [this invoke ok] this)
+  (stats [this] stats))
 
 (defn inconsistent
   "Represents inconsistent termination of a model."
-  [message]
-  (Inconsistent. message))
+  [model message]
+  (Inconsistent. (stats model) message))
 
 (defn inconsistent?
   "Is this model inconsistent?"
@@ -197,9 +203,10 @@
   ; Note that *every* response to creating a chain of accounts is either
   ; entirely :ok, or entirely :linked-event-failed with the exception of a
   ; single error.
-  (let [n       (count events)
-        results (object-array n)]
-    (loopr [i       0
+  (let [n           (count events)
+        results     (object-array n)
+        event-count (:event-count model)]
+    (loopr [i        0
             model'   model]
            [event events]
            (let [result (if (and (= i (dec n))
@@ -207,24 +214,28 @@
                           :linked-event-chain-open
                           (create model' event import?))]
              (cond
+               ; Inconsistent; abort here. No point computing results.
+               (inconsistent? result)
+               [result nil]
+
                ; Logical error; fail chain and return model without having
                ; applied ops.
                (keyword? result)
                (do (Arrays/fill results :linked-event-failed)
                    (aset results i result)
-                   [(remember-error model event result)
+                   [(-> model
+                        (remember-error event result)
+                        (assoc :event-count (+ event-count n)))
                     (bl/from-array results)])
-
-               ; Inconsistent; abort here. No point computing results.
-               (inconsistent? result)
-               [result nil]
 
                ; Good, move on
                true
                (recur (inc i) result)))
            ; Completed successfully
            (do (Arrays/fill results :ok)
-               [model' (bl/from-array results)]))))
+               [(assoc model'
+                       :event-count (+ event-count n))
+                (bl/from-array results)]))))
 
 (defn validate
   "Takes a model, an invoke, an OK, an event name (e.g. :transfer or :event), a
@@ -233,6 +244,9 @@
   [model invoke ok event-name events expected actual]
   (if-let [i (first-not=-index expected actual)]
     (inconsistent
+      ; We have to unwind the event-count here, because our apply-chain logic
+      ; advances it either way.
+      (update model :event-count - (- (count events) i))
       {:type      :model
        :op        invoke
        :op'       ok
@@ -264,7 +278,11 @@
                this
                (recur this (bl/concat expected chain-results))))
            ; Done applying chains.
-           (validate this invoke ok event-name events expected actual))))
+           (let [this (validate this invoke ok event-name events
+                                expected actual)]
+             (if (inconsistent? this)
+               this
+               (update this :op-count inc))))))
 
 (def conflicting-transfer-flags
   "A map of transfer flags to sets of conflicting flags."
@@ -391,6 +409,8 @@
    ; the simulation.
    account-id->timestamp
    transfer-id->timestamp
+   ^long op-count           ; Number of ops applied
+   ^long event-count        ; Number of events applied
    ^long timestamp          ; Our internal timestamp
    ^long account-timestamp  ; The last account timestamp created
    ^long transfer-timestamp ; The last transfer timestamp created
@@ -404,29 +424,32 @@
   (advance-timestamp [this ts]
     (if (< timestamp ts)
       (assoc this :timestamp ts)
-      (inconsistent {:type :nonmonotonic-timestamp
+      (inconsistent this
+                    {:type :nonmonotonic-timestamp
                      :timestamp  timestamp
                      :timestamp' ts})))
 
   (advance-account-timestamp [this ts]
     (if (< account-timestamp ts)
       (assoc this :account-timestamp ts)
-      (inconsistent {:type :nonmonotonic-account-timestamp
+      (inconsistent this
+                    {:type :nonmonotonic-account-timestamp
                      :account-timestamp account-timestamp
                      :timestamp' ts})))
 
   (advance-transfer-timestamp [this ts]
     (if (< transfer-timestamp ts)
       (assoc this :transfer-timestamp ts)
-      (inconsistent {:type :nonmonotonic-transfer-timestamp
+      (inconsistent this
+                    {:type :nonmonotonic-transfer-timestamp
                      :transfer-timestamp transfer-timestamp
                      :timestamp' ts})))
 
   (create-account [this account import?]
-    (let [id        (:id account)
-          extant    (bm/get accounts id)
-          flags     (:flags account)
-          imported? (:imported flags)
+    (let [id         (:id account)
+          extant     (bm/get accounts id)
+          flags      (:flags account)
+          imported?  (:imported flags)
           atimestamp (:timestamp account 0)]
       (cond
         ; See https://docs.tigerbeetle.com/reference/requests/create_accounts#result
@@ -518,7 +541,8 @@
                               :debits-pending 0N
                               :debits-posted 0N
                               :timestamp ts)]
-          (assoc this' :accounts (bm/put accounts id account))))))
+          (assoc this'
+                 :accounts    (bm/put accounts id account))))))
 
   (create-transfer [this transfer import?]
     ; See https://docs.tigerbeetle.com/reference/requests/create_transfers
@@ -795,8 +819,8 @@
                           amount'
                           flags))]
       (assoc this'
-             :accounts accounts'
-             :transfers transfers')))
+             :accounts    accounts'
+             :transfers   transfers')))
 
   (create-accounts-chain [this accounts import?]
     (create-chain this create-account accounts import?))
@@ -821,16 +845,17 @@
     (let [ids    (:value invoke)
           actual (:value ok)
           n      (count ids)]
-      (loop [i 0]
+      (loop [i 0
+             this this]
         (if (= i n)
-          this
+          (assoc this :op-count (inc op-count))
           (let [id       (nth ids i)
                 actual   (nth actual i)
                 expected (read-account this id)]
             (if (= expected actual)
-              (recur (inc i))
-              (inconsistent
-                {:type :model
+              (recur (inc i) (update this :event-count inc))
+              (inconsistent this
+                {:type      :model
                  :op        invoke
                  :op'       ok
                  :id        id
@@ -843,15 +868,17 @@
     (let [ids     (:value invoke)
           actual  (:value ok)
           n       (count ids)]
-      (loop [i 0]
+      (loop [i 0
+             this this]
         (if (= i n)
-          this
+          (assoc this :op-count (inc op-count))
           (let [id      (nth ids i)
                 actual  (nth actual i)
                 expected (read-transfer this id)]
             (if (= expected actual)
-              (recur (inc i))
+              (recur (inc i) (update this :event-count inc))
               (inconsistent
+                this
                 {:type     :model
                  :op       invoke
                  :op'      ok
@@ -868,7 +895,11 @@
       :create-transfers (create-transfers this invoke ok)
       :lookup-accounts  (lookup-accounts this invoke ok)
       :lookup-transfers (lookup-transfers this invoke ok)
-      )))
+      ))
+
+  (stats [this]
+    {:op-count op-count
+     :event-count event-count}))
 
 (defn init
   "Constructs an initial model state. Takes two Bifurcan maps of account ID ->
@@ -877,7 +908,9 @@
            transfer-id->timestamp]}]
   (assert (instance? IMap account-id->timestamp))
   (assert (instance? IMap transfer-id->timestamp))
-  (map->TB {:account-id->timestamp account-id->timestamp
+  (map->TB {:op-count 0
+            :event-count 0
+            :account-id->timestamp account-id->timestamp
             :transfer-id->timestamp transfer-id->timestamp
             :timestamp -1
             :account-timestamp -1

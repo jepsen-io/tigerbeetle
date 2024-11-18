@@ -5,7 +5,8 @@
                      [pprint :refer [pprint]]
                      [test :refer :all]]
             [jepsen [history :as h]]
-            [jepsen.tigerbeetle [model :as m :refer :all]]))
+            [jepsen.tigerbeetle [model :as m :refer :all]])
+  (:import (jepsen.tigerbeetle.model IModel)))
 
 (defn a
   "Build a simple account."
@@ -125,6 +126,21 @@
   [model]
   (not (inconsistent? model)))
 
+(deftest stats-test
+  (testing "lookups"
+    (is (= {:op-count 1
+            :event-count 3}
+           (stats (la-step init0 [1N 2N 3N] [nil nil nil]))
+           (stats (lt-step init0 [1N 2N 3N] [nil nil nil])))))
+
+  (testing "creates"
+    (is (= {:op-count 1
+            :event-count 2}
+           #_(stats (ca-step init0 [a1 a2] [:ok :ok]))
+           (stats (ct-step init0 [(t 3N a1 a2 5N) (t 4N a1 a2 5N)]
+                           [:credit-account-not-found
+                            :credit-account-not-found]))))))
+
 (deftest chains-test
   (testing "empty"
     (is (= [] (chains []))))
@@ -159,7 +175,8 @@
 
 (deftest create-accounts-test
   (testing "empty"
-    (is (= init0
+    (is (= (assoc init0
+                  :op-count 1)
            (ca-step init0 [] []))))
 
   (testing "basic"
@@ -181,7 +198,8 @@
               (is (= {} (datafy (:transfers model)))))]))
 
   (testing "nonmonotonic"
-    (is (= (inconsistent {:type :nonmonotonic-account-timestamp
+    (is (= (inconsistent (reify IModel (stats [_] {:op-count 0, :event-count 1}))
+                         {:type :nonmonotonic-account-timestamp
                           :account-timestamp 102
                           :timestamp' 101})
            (ca-step init0 [a2 a1] [:ok :ok]))))
@@ -193,7 +211,9 @@
           op  {:f :create-accounts, :value [a1 a2]}
           ; But we insist both were OK
           op' {:f :create-accounts, :value [:ok :ok]}]
-      (is (= (inconsistent {:type     :model
+      ; Blows up on the very first op
+      (is (= (inconsistent (reify IModel (stats [_] {:op-count 0, :event-count 0}))
+                           {:type     :model
                             :op       op
                             :op'      op'
                             :account  a1
@@ -399,6 +419,8 @@
         ; Only account 2 exists
         model (ca-step init0 [a2] [:ok])]
     (is (= (assoc model
+                  :op-count    2
+                  :event-count 3
                   :errors (bm/from {3N :debit-account-not-found
                                     4N :credit-account-not-found}))
            (ct-step model [t1 t2]
