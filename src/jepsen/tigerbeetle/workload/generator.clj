@@ -53,23 +53,25 @@
   ([^long n]
    (zipf 1.000001 n))
   ([^double skew ^long n]
-   (assert (not= 1.0 skew)
-           "Sorry, our approximation can't do skew = 1.0! Try a small epsilon, like 1.0001")
-   (let [t (/ (- (Math/pow n (- 1 skew)) skew)
-              (- 1 skew))]
-     (loop []
-       (let [inv-b         (b-inverse-cdf skew t (dg/double))
-             sample-x      (long (+ 1 inv-b))
-             y-rand        (dg/double)
-             ratio-top     (Math/pow sample-x (- skew))
-             ratio-bottom  (/ (if (<= sample-x 1)
-                                1
-                                (Math/pow inv-b (- skew)))
-                              t)
-             rat (/ ratio-top (* t ratio-bottom))]
-         (if (< y-rand rat)
-           (dec sample-x)
-           (recur)))))))
+   (if (= n 0)
+     0
+     (do (assert (not= 1.0001 skew)
+                 "Sorry, our approximation can't do skew = 1.0! Try a small epsilon, like 1.0001")
+         (let [t (/ (- (Math/pow n (- 1 skew)) skew)
+                    (- 1 skew))]
+           (loop []
+             (let [inv-b         (b-inverse-cdf skew t (dg/double))
+                   sample-x      (long (+ 1 inv-b))
+                   y-rand        (dg/double)
+                   ratio-top     (Math/pow sample-x (- skew))
+                   ratio-bottom  (/ (if (<= sample-x 1)
+                                      1
+                                      (Math/pow inv-b (- skew)))
+                                    t)
+                   rat (/ ratio-top (* t ratio-bottom))]
+               (if (< y-rand rat)
+                 (dec sample-x)
+                 (recur)))))))))
 
 (defn zipf-nth
   "Selects a random element from a Bifurcan collection with a Zipfian
@@ -80,7 +82,7 @@
    (b/nth xs (zipf skew (b/size xs)))))
 
 (defn binto
-  "Generic `into`, for Bifurcan collections. Takes a conj function (e.g.
+  "Generic `into` for Bifurcan collections. Takes a conj function (e.g.
   bs/add), a collection to add to, and a reducible of things to add. Returns
   new collection."
   [conj coll xs]
@@ -104,14 +106,16 @@
 ; corresponding update function add-*, which folds that invocation into the
 ; state when it is actually performed.
 (definterface+ IState
+  (rand-ledger [state]
+               "Generates a random ledger.")
+
   (rand-account-id [state]
-                   "Generates a random, likely extant, account ID.")
+                   [state ledger]
+                   "Generates a random, likely extant, account ID. Optionally
+                   constrained to a single ledger.")
 
   (rand-transfer-id [state]
                     "Generates a random, likely extant, transfer ID.")
-
-  (rand-ledger [state]
-               "Generates a random ledger.")
 
   (gen-new-accounts [state n]
                "Generates a series of n new accounts.")
@@ -145,9 +149,10 @@
 
 (defrecord State
   [
-   next-id        ; The next ID we'll hand out
-   accounts       ; A Bifurcan map of id->account
-   transfers      ; A Bifurcan map of id->transfer
+   next-id             ;  The next ID we'll hand out
+   accounts            ; A Bifurcan map of id->account
+   transfers           ; A Bifurcan map of id->transfer
+   ledger->account-ids ; A Bifurcan map of ledger to lists of account IDs.
    ; A Bifurcan set of account IDs we may have created, but haven't seen yet.
    unseen-accounts
    ; Ditto, transfers
@@ -160,6 +165,14 @@
       (if (pos? n)
         (bm/key (zipf-nth accounts))
         ; No accounts yet but we can always make one up!
+        (bigint (inc (zipf 100))))))
+
+  (rand-account-id [this ledger]
+    (let [ids (bm/get ledger->account-ids ledger bl/empty)
+          n   (b/size ids)]
+      (if (pos? n)
+        (zipf-nth ids)
+        ; No accounts yet, but we can always make one up!
         (bigint (inc (zipf 100))))))
 
   (rand-transfer-id [this]
@@ -183,28 +196,42 @@
              ids)))
 
   (gen-new-transfers [this n]
-    (let [ids (range next-id (+ next-id n))]
+    (let [ids (range next-id (+ next-id n))
+          ; TODO: occasionally generate incompatible ledgers
+          ledger (rand-ledger this)]
       (mapv (fn [id]
               {:id                id
-               :debit-account-id  (rand-account-id this)
-               :credit-account-id (rand-account-id this)
+               :debit-account-id  (rand-account-id this ledger)
+               :credit-account-id (rand-account-id this ledger)
                :amount            (if (< (dg/double) 0.01)
                                     ; Sometimes we generate zero transfers
                                     0
                                     ; But mostly, zipf-distributed ones
                                     (inc (zipf 1000)))
-               :ledger            (rand-ledger this)
+               :ledger            ledger
                :code              (dg/long 1 10)
                :user-data         (dg/long 0 10)
                :flags             #{}})
             ids)))
 
   (add-new-accounts [this new-accounts]
-    (let [ids (mapv :id new-accounts)]
+    (let [ids (mapv :id new-accounts)
+          ledger->account-ids
+          (binto (fn track-ledger [m account]
+                   (bm/update m
+                              (:ledger account)
+                              (fn append [account-ids]
+                                (if account-ids
+                                  (bl/add-last account-ids
+                                               (:id account))
+                                  (bl/list (:id account))))))
+                 ledger->account-ids
+                 new-accounts)]
       (assoc this
-             :next-id         (inc (reduce max next-id ids))
-             :accounts        (into-by-id accounts new-accounts)
-             :unseen-accounts (binto bs/add unseen-accounts ids))))
+             :next-id             (inc (reduce max next-id ids))
+             :accounts            (into-by-id accounts new-accounts)
+             :ledger->account-ids ledger->account-ids
+             :unseen-accounts     (binto bs/add unseen-accounts ids))))
 
   (add-new-transfers [this new-transfers]
     (let [ids (mapv :id new-transfers)]
@@ -235,11 +262,12 @@
   "A fresh state."
   []
   (map->State
-    {:next-id          1N
-     :accounts         bm/empty
-     :transfers        bm/empty
-     :unseen-accounts  bs/empty
-     :unseen-transfers bs/empty}))
+    {:next-id             1N
+     :accounts            bm/empty
+     :transfers           bm/empty
+     :unseen-accounts     bs/empty
+     :unseen-transfers    bs/empty
+     :ledger->account-ids bm/empty}))
 
 ; A generator which maintains the state and ensures its wrapped generator has
 ; access to it via the context map.
