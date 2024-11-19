@@ -42,10 +42,22 @@
   "Installs the TigerBeetle package."
   [test node]
   (c/su
-    (let [url (str "https://github.com/tigerbeetle/tigerbeetle/releases/download/"
-                   (:version test)
-                   "/tigerbeetle-x86_64-linux.zip")]
-      (cu/install-archive! url bin))))
+    (if-let [zip (:zip test)]
+      (let [tmp (cu/tmp-dir!)
+            tmp-zip (str tmp "/tb.zip")]
+        (try
+          (info "Installing TigerBeetle from local zip file" zip)
+          (c/upload zip tmp-zip)
+          (str "file://" tmp-zip)
+          (cu/install-archive! (str "file://" tmp-zip) bin)
+          (finally
+            (c/exec :rm :-rf tmp))))
+      ; Install from web
+      (let [url (str "https://github.com/tigerbeetle/tigerbeetle/releases/download/"
+                     (:version test)
+                     "/tigerbeetle-x86_64-linux.zip")]
+        (info "Installing TigerBeetle from remote URL" url)
+        (cu/install-archive! url bin)))))
 
 (defn configure!
   "Writes the initial data file."
