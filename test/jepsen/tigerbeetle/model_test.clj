@@ -271,7 +271,8 @@
             :event-count 1
             :type :nonmonotonic-account-timestamp
             :account-timestamp 102
-            :timestamp' 101
+            :account-timestamp' 101
+            :account    a1
             :op         {:f :create-accounts, :value [a2 a1]}
             :op'        {:f :create-accounts, :value [:ok :ok]}})
          (ca-step init0 [a2 a1] [:ok :ok]))))
