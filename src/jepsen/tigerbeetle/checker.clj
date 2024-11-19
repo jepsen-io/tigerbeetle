@@ -331,6 +331,29 @@
             :create-transfer-results create-transfer-results})
          (h/tesser history))))
 
+(defn check-duplicate-timestamps
+  "Checks a history to ensure all timestamps are distinct. Returns a map like:
+
+  {:duplicate-timestamps
+   {:count       The number of timestamps with duplicates
+    :frequencies A vector of [timestamp, count] pairs, sorted by decreasing
+                 count.
+    :dups        A vector of vectors, each a group of OK operations with
+                 identical timestamps."
+  [history]
+  (let [dups (->> (t/filter h/ok?)
+                  (t/filter :timestamp)
+                  (t/group-by :timestamp)
+                  (t/into [])
+                  (h/tesser history)
+                  (remove #(= 1 (count (val %))))
+                  (into {}))]
+    (when (seq dups)
+      {:duplicate-timestamps
+       {:count        (count dups)
+        :frequencies  (sort-by val (update-vals dups count))
+        :dups         dups}})))
+
 (defn analysis
   "Analyzes a history, gluing together all the various data structures we
   need."
@@ -358,11 +381,14 @@
                             (model-check {:history h
                                           :account-id->timestamp ait
                                           :transfer-id->timestamp tit}))
+        check-duplicate-timestamps (h/task history duplicate-timestamps []
+                                           (check-duplicate-timestamps history))
         stats (h/task history stats []
                       (stats history))
         ; Build error map
         errors (merge (sorted-map)
-                      @model-check)
+                      @model-check
+                      @check-duplicate-timestamps)
         ]
     (merge errors
            {:stats @stats}
