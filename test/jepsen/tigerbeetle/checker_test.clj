@@ -67,10 +67,13 @@
   (testing "empty"
     (let [h (h/history [])
           r (check h)]
-      (is (= {:valid? true
+      (is (= {:valid? :unknown
+              :not #{}
+              :also-not #{}
               :stats {:create-account-results {}
                       :create-transfer-results {}}
-              :error-types #{}}
+              :error-types #{:empty-transaction-graph}
+              :empty-transaction-graph true}
              r))))
 
   (testing "correct"
@@ -131,3 +134,39 @@
                     {:expected   {:ledger 2}
                      :actual     {:ledger 1}}}}
            r))))
+
+(deftest realtime-test
+  (testing "consistent"
+    ; Timestamps here advance sequentially.
+    (let [h (h/history
+              [(o 0 0 :invoke :lookup-accounts [])
+               (o 1 0 :ok     :lookup-accounts [] 100)
+               (o 2 1 :invoke :lookup-transfers [])
+               (o 3 1 :ok     :lookup-transfers [] 101)])]
+      (is (:valid? (check h)))))
+  (testing "inconsistent"
+    ; But here, they're nonlinearizable
+    (let [h (h/history
+              [(o 0 0 :invoke :lookup-accounts [])
+               (o 1 0 :ok     :lookup-accounts [] 101)
+               (o 2 1 :invoke :lookup-transfers [])
+               (o 3 1 :ok     :lookup-transfers [] 100)])
+          r (check h)]
+      (is (= {:valid? false
+              :not #{:strong-read-uncommitted}
+              :also-not #{:strong-read-committed
+                          :strong-snapshot-isolation
+                          :strong-serializable}
+              :error-types #{:G0-realtime}
+              :stats {:create-account-results {}
+                      :create-transfer-results {}}
+              :G0-realtime
+              [{:type  :G0-realtime
+                :cycle [(h 1) (h 3) (h 1)]
+                :steps [{:type :realtime,
+                         :a' (h 1)
+                         :b  (h 2)}
+                        {:type       :ww
+                         :timestamp  100
+                         :timestamp' 101}]}]}
+             r)))))

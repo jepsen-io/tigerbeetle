@@ -59,12 +59,18 @@
   torn transaction violating model consistency. We may want to add more
   provable Elle dependencies to get better locality."
   (:require [clojure.core [match :refer [match]]]
+            [clojure.tools.logging :refer [info warn]]
             [bifurcan-clj [core :as b]
                           [int-map :as bim]
                           [graph :as bg]
                           [map :as bm]
                           [set :as bs]]
             [dom-top.core :refer [loopr]]
+            [elle [core :as elle]
+                  [graph]
+                  [rels :refer [ww wr rw]]
+                  [txn]
+                  [util :refer [nanos->secs]]]
             [jepsen [checker :as checker]
                     [history :as h]]
             [jepsen.tigerbeetle [model :as model]]
@@ -107,6 +113,22 @@
    :combiner-identity (comp b/linear bm/map)
    :combiner         bm/merge
    :post-combiner    b/forked})
+
+(t/deftransform bsorted-map
+  "Turns [k v] pairs into a Bifurcan sorted map."
+  []
+  (assert (nil? downstream))
+  (let [r (fn reducer
+            ([] (b/linear (bm/sorted-map)))
+            ([m] m)
+            ([m [k v]]
+             (bm/put m k v)))]
+    {:reducer-identity  r
+     :reducer           r
+     :post-reducer      r
+     :combiner-identity r
+     :combiner          bm/merge
+     :post-combiner     b/forked}))
 
 (defn first-final-read
   "Takes a history. Returns the offset of the first final read."
@@ -354,6 +376,67 @@
         :frequencies  (sort-by val (update-vals dups count))
         :dups         dups}})))
 
+;; Realtime graph analysis
+
+(defrecord TimestampExplainer []
+  elle/DataExplainer
+  (explain-pair-data [_ a b]
+    (let [t (:timestamp a)
+          t' (:timestamp b)]
+      (when (and t t' (< t t'))
+        {:type       :ww
+         :timestamp  t
+         :timestamp' t'})))
+
+  (render-explanation [_ {:keys [type timestamp timestamp']} a-name b-name]
+    (str a-name " executed at logical timestamp " timestamp ", and "
+         b-name " executed at logical timestamp " timestamp' " ("
+         (float (nanos->secs (- timestamp' timestamp))) " seconds later.")))
+
+(defn timestamp-graph
+  "Takes a history, and constructs an Elle dependency graph based on the
+  timestamps of each operation."
+  [history]
+  (let [; A sorted map of timestamp to operation index.
+        timestamp->index (->> (t/keep (fn ts->index-keep [op]
+                                        (when-let [ts (:timestamp op)]
+                                          [ts (:index op)])))
+                              (bsorted-map)
+                              (h/tesser history))
+        ; Zip through timestamps, linking each op to the next.
+        graph (loopr [prev-op nil
+                      g       (b/linear (elle.graph/op-digraph))]
+                     [ti timestamp->index]
+                     (let [t  (bm/key ti)
+                           i  (bm/value ti)
+                           op (h/get-index history i)]
+                       (if (nil? prev-op)
+                         ; First step; immediately jump forward
+                         (recur op g)
+                         ; Link prev-op to op
+                         (recur op (elle.graph/link g prev-op op ww))))
+                     ; Done
+                     (b/forked g))]
+    {:graph graph
+     :explainer (TimestampExplainer.)}))
+
+(defn check-realtime
+  "Checks a history for realtime consistency. We model the system as a single
+  object, the timestamp, which every :ok operation advances. We infer a
+  write-write dependency between every pair of operations on the basis of those
+  timestamps, then ask Elle to check that the resulting graph is Strict
+  Serializable.
+
+  Takes a map with the full history."
+  [{:keys [history] :as opts}]
+  (let [analyzer (elle/combine
+                   timestamp-graph
+                   elle/realtime-graph)
+        cycles (:anomalies (elle.txn/cycles! opts analyzer history))]
+    (elle.txn/result-map opts cycles)))
+
+;; Integrating various checks
+
 (defn analysis
   "Analyzes a history, gluing together all the various data structures we
   need."
@@ -381,6 +464,8 @@
                             (model-check {:history h
                                           :account-id->timestamp ait
                                           :transfer-id->timestamp tit}))
+        check-realtime (h/task history check-realtime []
+                               (check-realtime {:history history}))
         check-duplicate-timestamps (h/task history duplicate-timestamps []
                                            (check-duplicate-timestamps history))
         stats (h/task history stats []
@@ -388,18 +473,32 @@
         ; Build error map
         errors (merge (sorted-map)
                       @model-check
+                      (:anomalies @check-realtime)
                       @check-duplicate-timestamps)
         ]
     (merge errors
            {:stats @stats}
+           (select-keys @check-realtime [:not :also-not])
            {:error-types (into (sorted-set) (keys errors))})))
+
+(def unknown-error-types
+  "These errors only cause us to be :valid? :unknown, rather than false"
+  #{:empty-transaction-graph})
 
 (defn check
   "Checks a history, returning a map with statistics and errors."
   [history]
-  (let [a (analysis history)]
-    (-> a
-        (assoc :valid? (empty? (:error-types a))))))
+  (let [a           (analysis history)
+        error-types (:error-types a)
+        valid? (cond (seq (remove unknown-error-types error-types))
+                     false
+
+                     (seq error-types)
+                     :unknown
+
+                     true
+                     true)]
+    (assoc a :valid? valid?)))
 
 (defrecord Checker []
   checker/Checker
