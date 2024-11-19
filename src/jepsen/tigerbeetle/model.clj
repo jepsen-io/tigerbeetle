@@ -68,10 +68,10 @@
                      `timestamp`. Constructs an invalid state if the timestamp
                      is not strictly monotonic.")
 
-  (advance-account-timestamp [model ^long timestamp]
+  (advance-account-timestamp [model ^long timestamp account]
                              "Advances the account-specific timestamp.")
 
-  (advance-transfer-timestamp [model ^long timestamp]
+  (advance-transfer-timestamp [model ^long timestamp transfer]
                               "Advances the transfer-specific timestamp.")
 
   (create-account [model account import?]
@@ -435,29 +435,34 @@
   (advance-timestamp [this ts]
     (if (< timestamp ts)
       (assoc this :timestamp ts)
-      (inconsistent {:type :nonmonotonic-timestamp
-                     :op-count   op-count
-                     :event-count event-count
-                     :timestamp  timestamp
-                     :timestamp' ts})))
+      (inconsistent
+        {:type        :nonmonotonic-timestamp
+         :op-count    op-count
+         :event-count event-count
+         :timestamp   timestamp
+         :timestamp'  ts})))
 
-  (advance-account-timestamp [this ts]
+  (advance-account-timestamp [this ts account]
     (if (< account-timestamp ts)
       (assoc this :account-timestamp ts)
-      (inconsistent {:type :nonmonotonic-account-timestamp
-                     :op-count   op-count
-                     :event-count event-count
-                     :account-timestamp account-timestamp
-                     :timestamp' ts})))
+      (inconsistent
+        {:type               :nonmonotonic-account-timestamp
+         :op-count           op-count
+         :event-count        event-count
+         :account            account
+         :account-timestamp  account-timestamp
+         :account-timestamp' ts})))
 
-  (advance-transfer-timestamp [this ts]
+  (advance-transfer-timestamp [this ts transfer]
     (if (< transfer-timestamp ts)
       (assoc this :transfer-timestamp ts)
-      (inconsistent {:type :nonmonotonic-transfer-timestamp
-                     :op-count   op-count
-                     :event-count event-count
-                     :transfer-timestamp transfer-timestamp
-                     :timestamp' ts})))
+      (inconsistent
+        {:type                :nonmonotonic-transfer-timestamp
+         :op-count            op-count
+         :event-count         event-count
+         :transfer            transfer
+         :transfer-timestamp  transfer-timestamp
+         :transfer-timestamp' ts})))
 
   (create-account [this account import?]
     (let [id         (:id account)
@@ -542,7 +547,7 @@
                          (bm/get account-id->timestamp id))
                _       (assert ts (str "No timestamp known for account " id))
                ; Advance clocks to the new timestamp
-               this' (advance-account-timestamp this ts)
+               this' (advance-account-timestamp this ts account)
                _     (when (inconsistent? this') (return this'))
                this' (if imported?
                        this'
@@ -787,7 +792,7 @@
                (return :overflows-timeout))
 
            ; Advance our clocks to the new timestamp
-           this' (advance-transfer-timestamp this ts)
+           this' (advance-transfer-timestamp this ts transfer)
            _     (when (inconsistent? this') (return this'))
            this' (if imported?
                    this'
