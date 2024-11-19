@@ -302,8 +302,7 @@
            (let [op     (h/invocation history op')
                  model  (model/step model op op')]
              (if (model/inconsistent? model)
-               (let [err (merge (model/stats model)
-                                (:message model))]
+               (let [err (into (sorted-map) model)]
                  {(:type err) (dissoc err :type)})
                (recur model)))
            ; OK

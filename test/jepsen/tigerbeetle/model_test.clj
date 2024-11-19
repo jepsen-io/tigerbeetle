@@ -137,19 +137,22 @@
      m#))
 
 (deftest stats-test
-  (testing "lookups"
-    (is (= {:op-count 1
-            :event-count 3}
-           (stats (check-consistent (la-step init0 [1N 2N 3N] [nil nil nil])))
-           (stats (check-consistent (lt-step init0 [1N 2N 3N] [nil nil nil]))))))
+  (let [c (fn [model]
+            (select-keys (check-consistent model)
+                         [:op-count :event-count]))]
+    (testing "lookups"
+      (is (= {:op-count 1
+              :event-count 3}
+             (c (la-step init0 [1N 2N 3N] [nil nil nil]))
+             (c (lt-step init0 [1N 2N 3N] [nil nil nil])))))
 
-  (testing "creates"
-    (is (= {:op-count 1
-            :event-count 2}
-           (stats (check-consistent (ca-step init0 [a1 a2] [:ok :ok])))
-           (stats (check-consistent (ct-step init0 [(t 3N a1 a2 5N) (t 4N a1 a2 5N)]
-                                        [:debit-account-not-found
-                                         :debit-account-not-found])))))))
+    (testing "creates"
+      (is (= {:op-count 1
+              :event-count 2}
+             (c (ca-step init0 [a1 a2] [:ok :ok])))
+          (c (ct-step init0 [(t 3N a1 a2 5N) (t 4N a1 a2 5N)]
+                      [:debit-account-not-found
+                       :debit-account-not-found]))))))
 
 (deftest chains-test
   (testing "empty"
@@ -207,13 +210,6 @@
                      (datafy (:accounts model))))
               (is (= {} (datafy (:transfers model)))))]))
 
-  (testing "nonmonotonic"
-    (is (= (inconsistent (reify IModel (stats [_] {:op-count 0, :event-count 1}))
-                         {:type :nonmonotonic-account-timestamp
-                          :account-timestamp 102
-                          :timestamp' 101})
-           (ca-step init0 [a2 a1] [:ok :ok]))))
-
   (testing "inconsistent results"
     (let [a1  (update a1 :flags conj :imported)
           ; We mix imported and non-imported accounts, and the first imported
@@ -222,13 +218,15 @@
           ; But we insist both were OK
           op' {:f :create-accounts, :value [:ok :ok]}]
       ; Blows up on the very first op
-      (is (= (inconsistent (reify IModel (stats [_] {:op-count 0, :event-count 0}))
-                           {:type     :model
-                            :op       op
-                            :op'      op'
-                            :account  a1
-                            :expected :imported-event-timestamp-out-of-range
-                            :actual   :ok})
+      (is (= (inconsistent
+               {:op-count 0
+                :event-count 0
+                :type     :model
+                :op       op
+                :op'      op'
+                :account  a1
+                :expected :imported-event-timestamp-out-of-range
+                :actual   :ok})
              (step init0 op op')))))
 
   (testing "linked chains"
@@ -266,6 +264,17 @@
                          [a1 (assoc a1 :code 2)]
                          [:ok :exists-with-different-code])]
       (is (= {1N a1'} (datafy (:accounts model)))))))
+
+(deftest create-account-nonmonotonic-account-timestamp-test
+  (is (= (inconsistent
+           {:op-count 0
+            :event-count 1
+            :type :nonmonotonic-account-timestamp
+            :account-timestamp 102
+            :timestamp' 101
+            :op         {:f :create-accounts, :value [a2 a1]}
+            :op'        {:f :create-accounts, :value [:ok :ok]}})
+         (ca-step init0 [a2 a1] [:ok :ok]))))
 
 (deftest create-account-linked-event-chain-open-test
   ; If we leave an account chain open, it should explode.

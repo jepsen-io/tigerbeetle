@@ -36,22 +36,15 @@
 (definterface+ IModel
   (step [this invoke ok]
         "Takes a model, an invoke op, and a corresponding OK op. Returns a new
-        model.")
-  (stats [this]
-         "Returns a map of statistics for this model's progress:
+        model."))
 
-           {:ops    The number of operations applied
-            :events The number of events within operations applied}"))
-
-(defrecord Inconsistent [stats message]
+(defrecord Inconsistent [op op' type op-count event-count]
   IModel
-  (step [this invoke ok] this)
-  (stats [this] stats))
+  (step [this invoke ok] this))
 
-(defn inconsistent
+(def inconsistent
   "Represents inconsistent termination of a model."
-  [model message]
-  (Inconsistent. (stats model) message))
+  map->Inconsistent)
 
 (defn inconsistent?
   "Is this model inconsistent?"
@@ -246,13 +239,12 @@
     (inconsistent
       ; We have to unwind the event-count here, because our apply-chain logic
       ; advances it either way.
-      (update model :event-count - (- (count events) i))
-      {:type      :model
-       :op        invoke
-       :op'       ok
-       event-name (nth events i)
-       :expected  (b/nth expected i)
-       :actual    (nth actual i)})
+      {:type        :model
+       :op-count    (:op-count model)
+       :event-count (- (:event-count model) (- (count events) i))
+       event-name   (nth events i)
+       :expected    (b/nth expected i)
+       :actual      (nth actual i)})
     model))
 
 (defn create-helper
@@ -443,24 +435,27 @@
   (advance-timestamp [this ts]
     (if (< timestamp ts)
       (assoc this :timestamp ts)
-      (inconsistent this
-                    {:type :nonmonotonic-timestamp
+      (inconsistent {:type :nonmonotonic-timestamp
+                     :op-count   op-count
+                     :event-count event-count
                      :timestamp  timestamp
                      :timestamp' ts})))
 
   (advance-account-timestamp [this ts]
     (if (< account-timestamp ts)
       (assoc this :account-timestamp ts)
-      (inconsistent this
-                    {:type :nonmonotonic-account-timestamp
+      (inconsistent {:type :nonmonotonic-account-timestamp
+                     :op-count   op-count
+                     :event-count event-count
                      :account-timestamp account-timestamp
                      :timestamp' ts})))
 
   (advance-transfer-timestamp [this ts]
     (if (< transfer-timestamp ts)
       (assoc this :transfer-timestamp ts)
-      (inconsistent this
-                    {:type :nonmonotonic-transfer-timestamp
+      (inconsistent {:type :nonmonotonic-transfer-timestamp
+                     :op-count   op-count
+                     :event-count event-count
                      :transfer-timestamp transfer-timestamp
                      :timestamp' ts})))
 
@@ -869,15 +864,15 @@
                 expected (read-account this id)]
             (if (= expected actual)
               (recur (inc i) (update this :event-count inc))
-              (inconsistent this
-                {:type      :model
-                 :op        invoke
-                 :op'       ok
-                 :id        id
-                 :expected  expected
-                 :actual    actual
-                 :diff      (let [[- +] (diff expected actual)]
-                              {:expected -, :actual +})})))))))
+              (inconsistent
+                {:type        :model
+                 :op-count    (:op-count this)
+                 :event-count (:event-count this)
+                 :id          id
+                 :expected    expected
+                 :actual      actual
+                 :diff        (let [[- +] (diff expected actual)]
+                                {:expected -, :actual +})})))))))
 
   (lookup-transfers [this invoke ok]
     (let [ids     (:value invoke)
@@ -893,28 +888,28 @@
             (if (= expected actual)
               (recur (inc i) (update this :event-count inc))
               (inconsistent
-                this
-                {:type     :model
-                 :op       invoke
-                 :op'      ok
-                 :id       id
-                 :expected expected
-                 :actual   actual
-                 :diff     (let [[- +] (diff expected actual)]
-                             {:expected -, :actual +})})))))))
+                {:type        :model
+                 :op-count    (:op-count this)
+                 :event-count (:event-count this)
+                 :id          id
+                 :expected    expected
+                 :actual      actual
+                 :diff        (let [[- +] (diff expected actual)]
+                                {:expected -, :actual +})})))))))
 
   IModel
   (step [this invoke ok]
-    (case (:f invoke)
-      :create-accounts  (create-accounts this invoke ok)
-      :create-transfers (create-transfers this invoke ok)
-      :lookup-accounts  (lookup-accounts this invoke ok)
-      :lookup-transfers (lookup-transfers this invoke ok)
-      ))
-
-  (stats [this]
-    {:op-count op-count
-     :event-count event-count}))
+    (let [this' (case (:f invoke)
+                  :create-accounts  (create-accounts this invoke ok)
+                  :create-transfers (create-transfers this invoke ok)
+                  :lookup-accounts  (lookup-accounts this invoke ok)
+                  :lookup-transfers (lookup-transfers this invoke ok)
+                  )]
+      (if (inconsistent? this')
+        (assoc this'
+               :op invoke
+               :op' ok)
+        this'))))
 
 (defn init
   "Constructs an initial model state. Takes two Bifurcan maps of account ID ->
