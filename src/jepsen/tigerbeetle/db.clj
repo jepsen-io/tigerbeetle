@@ -82,7 +82,8 @@
   db/LogFiles
   (log-files [_ test node]
     (merge (when (:tcpdump test) (db/log-files tcpdump test node))
-           {log-file "tigerbeetle.log"}))
+           {data-file "data"
+            log-file  "tigerbeetle.log"}))
 
   db/Pause
   (pause! [_ test node]
