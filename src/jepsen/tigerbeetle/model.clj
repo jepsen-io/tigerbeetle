@@ -257,15 +257,24 @@
   results. Returns model if the results match, or an inconsistent state."
   [model invoke ok event-name events expected actual]
   (if-let [i (first-not=-index expected actual)]
-    (inconsistent
-      ; We have to unwind the event-count here, because our apply-chain logic
-      ; advances it either way.
-      {:type        :model
-       :op-count    (:op-count model)
-       :event-count (- (:event-count model) (- (count events) i))
-       event-name   (nth events i)
-       :expected    (b/nth expected i)
-       :actual      (nth actual i)})
+    (if (not= (b/size expected) (count actual))
+      (inconsistent
+        {:type           :model
+         :op-count       (:op-count model)
+         :event-count    (- (:event-count model) (- (count events) i))
+         :expected       (datafy expected)
+         :actual         actual
+         :expected-count (b/size expected)
+         :actual-count   (count actual)})
+      (inconsistent
+        ; We have to unwind the event-count here, because our apply-chain logic
+        ; advances it either way.
+        {:type        :model
+         :op-count    (:op-count model)
+         :event-count (- (:event-count model) (- (count events) i))
+         event-name   (nth events i)
+         :expected    (b/nth expected i)
+         :actual      (nth actual i)}))
     model))
 
 (defn create-helper
@@ -849,10 +858,12 @@
 
            ; Fill in transfer
            transfer (assoc transfer
-                           :timestamp ts
-                           :amount amount'
-                           :pending-id pending-id
-                           :timeout    (:timeout transfer 0))
+                           :timestamp         ts
+                           :amount            amount'
+                           :debit-account-id  debit-account-id
+                           :credit-account-id credit-account-id
+                           :pending-id        pending-id
+                           :timeout           (:timeout transfer 0))
            ; Record transfer
            transfers' (bm/put transfers id transfer)
            ; And if we updated a pending transfer...
@@ -989,6 +1000,7 @@
                             (when (= 0 n) 0)
                             (bm/key (b/nth timestamps (dec n))))
           timestamps    (bim/slice timestamps timestamp-min timestamp-max)
+          n             (b/size timestamps)
 
           ; Linear scan to build up expected results
           dir           (if (:reverse flags) -1 1)
@@ -1063,16 +1075,16 @@
            transfer-id->timestamp]}]
   (assert (instance? IMap account-id->timestamp))
   (assert (instance? IMap transfer-id->timestamp))
-  (map->TB {:op-count 0
-            :event-count 0
-            :account-id->timestamp account-id->timestamp
-            :transfer-id->timestamp transfer-id->timestamp
-            :timestamp -1
-            :account-timestamp -1
-            :transfer-timestamp -1
-            :accounts  bm/empty
-            :transfers bm/empty
-            :errors    bm/empty
-            :debit-account-id->timestamps   bm/empty
-            :credit-account-id->timestamps  bm/empty
+  (map->TB {:op-count                      0
+            :event-count                   0
+            :account-id->timestamp         account-id->timestamp
+            :transfer-id->timestamp        transfer-id->timestamp
+            :timestamp                     -1
+            :account-timestamp             -1
+            :transfer-timestamp            -1
+            :accounts                      bm/empty
+            :transfers                     bm/empty
+            :errors                        bm/empty
+            :debit-account-id->timestamps  bm/empty
+            :credit-account-id->timestamps bm/empty
             }))

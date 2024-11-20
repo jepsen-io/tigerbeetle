@@ -66,8 +66,8 @@
 
 (def ttsm
   "A simple map of ID->timestamp for transfers"
-  (bm/from (zipmap (map bigint (range 0N 10N))
-                   (range 200 210))))
+  (bm/from (zipmap (map bigint (range 0N 100N))
+                   (range 200 300))))
 
 (defn tts
   "Transfer with timestamp. Stamps a transfer with its corresponding timestamp from the timestamp map."
@@ -496,7 +496,9 @@
                 2N (assoc a2' :credits-posted 5N)}
                (datafy (:accounts m))))
         (is (= {1N (assoc (tts pending) :state :posted)
-                2N (tts post)}
+                2N (assoc (tts post)
+                          :debit-account-id 1N
+                          :credit-account-id 2N)}
                (datafy (:transfers m))))))
     (testing "void"
       (let [m (ct-step model [pending void] [:ok :ok])]
@@ -506,7 +508,9 @@
                 2N a2'}
                (datafy (:accounts m))))
         (is (= {1N (assoc (tts pending) :state :voided)
-                3N (tts void)}
+                3N (assoc (tts void)
+                          :debit-account-id  1N
+                          :credit-account-id 2N)}
                (datafy (:transfers m))))))))
 
 (deftest balancing-credit-test
@@ -1037,8 +1041,7 @@
                                :timestamp 204
                                )]))))))
 
-(deftest get-account-transfers-test
-  ; Very basic
+(deftest get-account-transfers-simple-test
   (let [t3 (t 5N a1 a2 10N #{:pending})
         t4 (t 6N a1 a3 8N)]
     (is (consistent?
@@ -1048,3 +1051,99 @@
               (gat-step {:account-id 1N
                          :flags #{:debits}}
                         (mapv tts [t3 t4])))))))
+
+(deftest get-account-transfers-test
+  (let [t10 (t 10 a1 a3 5N #{:pending})
+        t11 (assoc (t 11 a1 a3 1N) :code 2)
+        t12 (assoc (t 12 a3 a1 1N) :code 3)
+        t13 (t 13 a1 a2 1N)
+        ; Finish the pending transfer
+        t14 (assoc (t 14 0N 0N 2N #{:post-pending-transfer}) :code 10 :pending-id 10N)
+        t10' (tts t10)
+        t11' (tts t11)
+        t12' (tts t12)
+        t13' (tts t13)
+        t14' (assoc (tts t14)
+                    :amount            2N
+                    :debit-account-id  1N
+                    :credit-account-id 3N)
+        model (-> init0
+                  (ca-step [a1 a2 a3 a4 a5] [:ok :ok :ok :ok :ok])
+                  (ct-step [t10 t11 t12 t13 t14] [:ok :ok :ok :ok :ok]))]
+    (is (consistent? model))
+
+    (testing "debit"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 3N :flags #{:debits}}
+                      [t12']))))
+
+    (testing "credit"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 3N :flags #{:credits}}
+                      ; T13 has zeroes, but it completes T10, which DID credit account 3
+                      [t10' t11' t14']))))
+
+    (testing "debit and credit"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 1N, :flags #{:credits :debits}}
+                      [t10' t11' t12' t13' t14']))))
+
+    (testing "lower timestamp bound"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 1N, :flags #{:credits :debits} :timestamp-min 213}
+                      [t13' t14']))))
+
+    (testing "upper timestamp bound"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 1N, :flags #{:credits :debits} :timestamp-max 213}
+                      [t10' t11' t12' t13']))))
+
+    (testing "both timestamp bounds"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 1N
+                       :flags #{:credits :debits}
+                       :timestamp-min 211
+                       :timestamp-max 213}
+                      [t11' t12' t13']))))
+
+    (testing "reverse order"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 1N
+                       :flags #{:credits :debits :reverse}
+                       :timestamp-min 211
+                       :timestamp-max 213}
+                      [t13' t12' t11']))))
+
+    (testing "limit"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 1N
+                       :flags #{:credits :debits :reverse}
+                       :limit         2
+                       :timestamp-min 211
+                       :timestamp-max 213}
+                      [t13' t12']))))
+
+    (testing "code"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 1N
+                       :flags #{:credits :debits}
+                       :code 10}
+                      [t10' t14']))))
+
+    (testing "user-data"
+      (is (consistent?
+            (gat-step model
+                      {:account-id 1N
+                       :flags #{:credits :debits}
+                       :user-data 10}
+                      [t10']))))
+    ))
