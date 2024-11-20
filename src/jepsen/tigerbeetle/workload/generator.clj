@@ -109,6 +109,12 @@
   (rand-ledger [state]
                "Generates a random ledger.")
 
+  (rand-code [state]
+             "Generates a random code.")
+
+  (rand-user-data [state]
+                  "Generates random user data.")
+
   (rand-account-id [state]
                    [state ledger]
                    "Generates a random, likely extant, account ID. Optionally
@@ -116,6 +122,10 @@
 
   (rand-transfer-id [state]
                     "Generates a random, likely extant, transfer ID.")
+
+  (rand-timestamp [state]
+                  "Generates a random timestamp likely to be within the range
+                  of timestamps for the database.")
 
   (gen-new-accounts [state n]
                "Generates a series of n new accounts.")
@@ -145,11 +155,16 @@
 
   (gen-lookup-transfers [state n]
                         "Draws a vector of n transfers IDs that we might want
-                        to look up."))
+                        to look up.")
+
+  (gen-get-account-transfers [state]
+                             "Generates an account filter map for a get-account-transfers operation."))
 
 (defrecord State
   [
-   next-id             ;  The next ID we'll hand out
+   next-id             ; The next ID we'll hand out
+   ^long timestamp-min ; The smallest timestamp observed
+   ^long timestamp-max ; The largest timestamp observed
    accounts            ; A Bifurcan map of id->account
    transfers           ; A Bifurcan map of id->transfer
    ledger->account-ids ; A Bifurcan map of ledger to lists of account IDs.
@@ -185,13 +200,30 @@
   (rand-ledger [this]
     (inc (zipf 3)))
 
+  (rand-user-data [this]
+    (inc (zipf 1000)))
+
+  (rand-code [this]
+    (inc (zipf 1000)))
+
+  (rand-timestamp [this]
+    (cond (< timestamp-min timestamp-max)
+          (dg/uniform timestamp-min timestamp-max)
+
+          (= timestamp-min timestamp-max)
+          timestamp-min
+
+          ; We haven't seen anything yet; might as well guess
+          true
+          (System/nanoTime)))
+
   (gen-new-accounts [this n]
     (let [ids (range next-id (+ next-id n))]
        (mapv (fn [id]
                {:id        id
                 :ledger    (rand-ledger this)
-                :code      (dg/long 0 10000)
-                :user-data (dg/long 0 10000)
+                :code      (rand-code this)
+                :user-data (rand-user-data this)
                 :flags     #{}})
              ids)))
 
@@ -209,8 +241,8 @@
                                     ; But mostly, zipf-distributed ones
                                     (inc (zipf 1000)))
                :ledger            ledger
-               :code              (dg/long 1 10)
-               :user-data         (dg/long 0 10)
+               :code              (rand-code this)
+               :user-data         (rand-user-data this)
                :flags             #{}})
             ids)))
 
@@ -240,14 +272,6 @@
              :transfers        (into-by-id transfers new-transfers)
              :unseen-transfers (binto bs/add unseen-transfers ids))))
 
-  (saw-accounts [this accounts]
-    (assoc this :unseen-accounts
-           (binto bs/remove unseen-accounts (map :id accounts))))
-
-  (saw-transfers [this transfers]
-    (assoc this :unseen-transfers
-           (binto bs/remove unseen-transfers (map :id transfers))))
-
   (gen-lookup-accounts [this n]
     (->> (repeatedly (partial rand-account-id this))
          (take n)
@@ -256,13 +280,64 @@
   (gen-lookup-transfers [this n]
     (->> (repeatedly (partial rand-transfer-id this))
          (take n)
-         vec)))
+         vec))
+
+  (gen-get-account-transfers [this]
+    (let [flags (cond-> (condp < (dg/double)
+                          ; Very rarely, neither credits nor debits
+                          0.95 #{}
+                          ; Sometimes both
+                          0.8 #{:credits :debits}
+                          ; Mostly one
+                          0.4 #{:credits}
+                          #{:debits})
+                  ; Mostly we want rcron; that way periodic reads will cover
+                  ; more of the space
+                  (< (dg/double) 9/10)
+                  (conj :reversed))
+          ; A pair of timestamps we can use for min and max.
+          [t1 t2] (sort [(rand-timestamp this)
+                         (rand-timestamp this)])]
+      (cond-> {:flags       flags
+               :account-id  (rand-account-id this)
+               :limit       (dg/long 1 32)}
+        (< (dg/double) 1/4)
+        (assoc :min-timestamp t1)
+
+        (< (dg/double) 1/4)
+        (assoc :max-timestamp t2)
+
+        ; These are relatively unlikely to match, so we generate them
+        ; infrequently
+        (< (dg/double) 1/16)
+        (assoc :user-data (rand-user-data this))
+
+        (< (dg/double) 1/16)
+        (assoc :code (rand-code this)))))
+
+  (saw-accounts [this accounts]
+    (let [timestamps (keep :timestamp accounts)]
+      (assoc this
+             :timestamp-min (reduce min timestamp-min timestamps)
+             :timestamp-max (reduce max timestamp-max timestamps)
+             :unseen-accounts
+             (binto bs/remove unseen-accounts (keep :id accounts)))))
+
+  (saw-transfers [this transfers]
+    (let [timestamps (keep :timestamp transfers)]
+      (assoc this
+             :timestamp-min (reduce min timestamp-min timestamps)
+             :timestamp-max (reduce max timestamp-max timestamps)
+             :unseen-transfers
+             (binto bs/remove unseen-transfers (keep :id transfers))))))
 
 (defn state
   "A fresh state."
   []
   (map->State
     {:next-id             1N
+     :timestamp-min       Long/MAX_VALUE
+     :timestamp-max       Long/MIN_VALUE
      :accounts            bm/empty
      :transfers           bm/empty
      :unseen-accounts     bs/empty
@@ -300,6 +375,10 @@
         [:ok :lookup-transfers]
         (GenContext. gen' (saw-transfers state value))
 
+        ; This also tells us about transfers
+        [:ok :get-account-transfers]
+        (GenContext. gen' (saw-transfers state value))
+
         [_ _]
         this))))
 
@@ -334,6 +413,12 @@
   {:f       :lookup-transfers
    :value   (gen-lookup-transfers (:state ctx) (rand-event-count))})
 
+(defn get-account-transfers-gen
+  "A generator for get-account-transfers operations."
+  [test ctx]
+  {:f       :get-account-transfers
+   :value   (gen-get-account-transfers (:state ctx))})
+
 (defn wrap-gen
   "Wraps a generator in one that maintains our state."
   [gen]
@@ -348,7 +433,8 @@
     [create-accounts-gen
      create-transfers-gen
      lookup-accounts-gen
-     lookup-transfers-gen]))
+     lookup-transfers-gen
+     get-account-transfers-gen]))
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"

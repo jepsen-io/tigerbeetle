@@ -39,7 +39,7 @@
      :f     :get-account-transfers
      :value [transfer1 transfer2 ...]}
 
-  ## Look up a accounts by IDs
+  ## Look up accounts by IDs
 
     {:type    :invoke
      :f       :lookup-accounts
@@ -116,7 +116,10 @@
         (merge op {:type :ok} (c/create-transfers! conn value))
 
         :lookup-transfers
-        (merge op {:type :ok} (c/lookup-transfers conn value)))
+        (merge op {:type :ok} (c/lookup-transfers conn value))
+
+        :get-account-transfers
+        (merge op {:type :ok} (c/get-account-transfers conn value)))
       (catch [:type :timeout] e
         (assoc op :type :info, :value nil, :error :timeout))))
 

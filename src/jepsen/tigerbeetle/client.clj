@@ -14,8 +14,9 @@
             [jepsen.control.net :as cn]
             [jepsen.tigerbeetle [core :refer [cluster-id port]]]
             [slingshot.slingshot :refer [try+ throw+]])
-  (:import (com.tigerbeetle AccountFlags
-                            AccountBatch
+  (:import (com.tigerbeetle AccountBatch
+                            AccountFilter
+                            AccountFlags
                             Batch
                             Client
                             CreateAccountResult
@@ -196,6 +197,26 @@
            (doto b
              (.add (UInt128/asBytes (biginteger id)))))))
 
+(defn account-filter
+  "Constructs an AccountFilter from a map."
+  [{:keys [account-id
+           flags
+           code
+           user-data
+           timestamp-min
+           timestamp-max
+           limit]}]
+  (let [f (doto (AccountFilter.)
+            (.setAccountId (bigint->bytes account-id))
+            (.setCredits   (contains? flags :credits))
+            (.setDebits    (contains? flags :debits)))]
+    (when code                (.setCode f code))
+    (when user-data           (.setUserData64 f user-data))
+    (when timestamp-min       (.setTimestampMin f timestamp-min))
+    (when timestamp-max       (.setTimestampMax f timestamp-max))
+    (when limit               (.setLimit f limit))
+    f))
+
 ; Deserialization
 
 (defn account-batch-current->clj
@@ -341,6 +362,16 @@
     {:timestamp (.getTimestamp (.getHeader res))
      :value     (create-transfer-result-batch->clj req res)}))
 
+(defn read-batch
+  "Takes a batch and a function which reads off the current element of the
+  batch as a map. Returns a vector of those elements."
+  [read-element ^Batch b]
+  (.beforeFirst b)
+  (loop [out (transient [])]
+    (if-not (.next b)
+      (persistent! out)
+      (recur (conj! out (read-element b))))))
+
 (defn index-batch
   "Takes a batch and a function which reads off the current element of the
   batch as a map with an :id field. Returns a Bifurcan map of id -> element"
@@ -364,12 +395,14 @@
         ids))
 
 (defn transfer-batch->clj
-  "Converts a transfer batch to a CLojure vector. Takes the vector of IDs
-  responsible for producing this response. Guarantees the result vector is 1:1
-  with the ID vector."
-  [ids ^TransferBatch res]
-  (mapv (partial bm/get (index-batch transfer-batch-current->clj res))
-        ids))
+  "Converts a transfer batch to a CLojure vector. Optionally takes the vector
+  of IDs responsible for producing this response. Guarantees the result vector
+  is 1:1 with the ID vector."
+  ([res]
+   (read-batch transfer-batch-current->clj res))
+  ([ids res]
+   (mapv (partial bm/get (index-batch transfer-batch-current->clj res))
+         ids)))
 
 (defn lookup-accounts
   "Takes a client and a vector of IDs. Returns
@@ -392,3 +425,13 @@
         res (deref+ c (.lookupTransfersAsync c req))]
     {:timestamp (.getTimestamp (.getHeader res))
      :value     (transfer-batch->clj ids res)}))
+
+(defn get-account-transfers
+  "Takes a client and a map representing an account filter. Returns
+
+    {:timestamp   The server timestamp for this operation
+     :value       A vector of matching transfers}"
+  [^Client c, filter]
+  (let [res (deref+ c (.getAccountTransfersAsync c (account-filter filter)))]
+    {:timestamp (.getTimestamp (.getHeader res))
+     :value     (transfer-batch->clj res)}))
