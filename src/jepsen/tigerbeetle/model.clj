@@ -16,6 +16,7 @@
   this because our histories *always* require a complete read of every account
   and transfer."
   (:require [bifurcan-clj [core :as b]
+             [int-map :as bim]
              [list :as bl]
              [map :as bm]
              [set :as bs]
@@ -32,6 +33,46 @@
   (:import (java.util Arrays)
            (jepsen.history Op)
            (io.lacuna.bifurcan IMap)))
+
+;; Utilities
+
+(defn first-not=-index
+  "Takes two iterables and returns the index of the first mismatch between
+  them, or nil if no mismatch."
+  [^Iterable a, ^Iterable b]
+  (let [a (.iterator a)
+        b (.iterator b)]
+    (loop [i 0]
+      (if (.hasNext a)
+        (if (.hasNext b)
+          (if (= (.next a) (.next b))
+            (recur (inc i))
+            i)
+          ; More as, no more bs
+          i)
+        ; Done
+        (if (.hasNext b)
+          ; No more as, more bs
+          i
+          ; Equal all the way
+          nil)))))
+
+(defn fill-list
+  "Constructs a Bifurcan list of n elements of x."
+  [n x]
+  (let [a (object-array n)]
+    (Arrays/fill a x)
+    (bl/from-array a)))
+
+(defn bm-put-set
+  "Takes a map, key `k`, and value `v`. Updates the map so that `k` points to a
+  set containing `v` (plus whatever is already present)."
+  [m k v]
+  (bm/update m k
+             (fn add [extant]
+               (bs/add (or extant bs/empty) v))))
+
+;; Models
 
 (definterface+ IModel
   (step [this invoke ok]
@@ -98,6 +139,10 @@
   (read-transfer [model id]
                  "Reads a transfer by ID, returning transfer or nil.")
 
+  (get-account-transfers- [model account-filter]
+                          "Returns a vector of transfers matching the given
+                          account filter.")
+
   ; API operations
   (create-accounts [model invoke ok]
                    "Applies a single create-accounts operation to the model,
@@ -113,7 +158,11 @@
 
   (lookup-transfers [model invoke ok]
                     "Applies a single lookup-transfers operation to the model,
-                    returning model'"))
+                    returning model'")
+
+  (get-account-transfers [model invoke op]
+                         "Applies a single get-account-transfer operation to the
+                         model, returning model'"))
 
 (def timestamp-upper-bound
   "One bigger than the biggest timestamp for an imported event (2^63)"
@@ -146,34 +195,6 @@
           (if (:linked (:flags (nth events j)))
             (recur i  j' chains)
             (recur j' j' (conj! chains (subvec events i j')))))))))
-
-(defn first-not=-index
-  "Takes two iterables and returns the index of the first mismatch between
-  them, or nil if no mismatch."
-  [^Iterable a, ^Iterable b]
-  (let [a (.iterator a)
-        b (.iterator b)]
-    (loop [i 0]
-      (if (.hasNext a)
-        (if (.hasNext b)
-          (if (= (.next a) (.next b))
-            (recur (inc i))
-            i)
-          ; More as, no more bs
-          i)
-        ; Done
-        (if (.hasNext b)
-          ; No more as, more bs
-          i
-          ; Equal all the way
-          nil)))))
-
-(defn fill-list
-  "Constructs a Bifurcan list of n elements of x."
-  [n x]
-  (let [a (object-array n)]
-    (Arrays/fill a x)
-    (bl/from-array a)))
 
 (defn remember-error
   "Some 'transient' errors are remembered for later. Takes a model, an event
@@ -414,6 +435,29 @@
       true
       (update account :credits-posted + amount))))
 
+(defn update-secondary-index
+  "Updates a secondary index to fold in a new account or transfer. Takes the
+  index, the value for the key `k-val` we want to index on (e.g. the code), and
+  the account or transfer `v`. Returns the new index.
+
+  Two facts:
+
+  1. We have to do range queries & ordering on timestamps
+  2. Each timestamp uniquely identifies a single transfer or account.
+
+  This lets us do something cute. We store our secondary indices using
+  Bifurcan integer maps of timestamp->transfer. These maps give us efficient
+  union, intersection, slice, and ordered traversal by timestamp. Moreover,
+  integer comparison is much faster than comparing the full transfer or
+  account objects. So each index is a map of, say, `debit account id` ->
+  `timestamp` -> `transfer`."
+  [index k-val v]
+  (bm/update index k-val
+             (fn [timestamp-int-map]
+               (bim/put (or timestamp-int-map (bim/int-map))
+                        (:timestamp v)
+                        v))))
+
 (defrecord TB
   [; A pair of maps of account/transfer ID to timestamp, derived from the
    ; observed history. We use these to advance time synthetically throughout
@@ -429,6 +473,12 @@
    transfers ; A map of transfer IDs to transfers
    errors    ; A map of permanent errors (TigerBeetle calls these *transient*
    ; errors, but they persist forever
+
+   ; Secondary indices.
+   ; Two Bifurcan maps of account ID to intmaps of timestamp -> transfer, based
+   ; on whether those transfers debited or credited that account.
+   debit-account-id->timestamps
+   credit-account-id->timestamps
    ]
 
   ITB
@@ -565,8 +615,6 @@
 
   (create-transfer [this transfer import?]
     ; See https://docs.tigerbeetle.com/reference/requests/create_transfers
-    ; TODO: this is incomplete; we have to go through the whole list of errors
-    ; and test them all
     (letr [{:keys [id
                    flags
                    credit-account-id
@@ -818,6 +866,14 @@
                         ; Nothing pending
                         transfers')
 
+           ; Update secondary indices
+           credit-account-id->timestamps'
+           (update-secondary-index credit-account-id->timestamps
+                                   credit-account-id transfer)
+           debit-account-id->timestamps'
+           (update-secondary-index debit-account-id->timestamps
+                                   debit-account-id transfer)
+
            ; Update accounts
            accounts'
            (-> accounts
@@ -832,10 +888,13 @@
                           :credit
                           (:amount pending)
                           amount'
-                          flags))]
+                          flags))
+           ]
       (assoc this'
-             :accounts    accounts'
-             :transfers   transfers')))
+             :accounts                      accounts'
+             :transfers                     transfers'
+             :credit-account-id->timestamps credit-account-id->timestamps'
+             :debit-account-id->timestamps  debit-account-id->timestamps')))
 
   (create-accounts-chain [this accounts import?]
     (create-chain this create-account accounts import?))
@@ -860,6 +919,7 @@
     (let [ids    (:value invoke)
           actual (:value ok)
           n      (count ids)]
+      (assert (= n (count actual)))
       (loop [i 0
              this this]
         (if (= i n)
@@ -883,6 +943,7 @@
     (let [ids     (:value invoke)
           actual  (:value ok)
           n       (count ids)]
+      (assert (= n (count actual)))
       (loop [i 0
              this this]
         (if (= i n)
@@ -902,13 +963,92 @@
                  :diff        (let [[- +] (diff expected actual)]
                                 {:expected -, :actual +})})))))))
 
+  (get-account-transfers- [this account-filter]
+    (let [{:keys [account-id
+                  user-data
+                  code
+                  timestamp-min
+                  timestamp-max
+                  limit
+                  flags]} account-filter
+          ; Begin our search with the involved accounts
+          timestamps (cond-> (bim/int-map)
+                       (:debits flags)
+                       (bm/union (bm/get debit-account-id->timestamps
+                                         account-id (bim/int-map)))
+
+                       (:credits flags)
+                       (bm/union (bm/get credit-account-id->timestamps
+                                         account-id (bim/int-map))))
+          ; Restrict by timestamp
+          n             (b/size timestamps)
+          timestamp-min (or timestamp-min
+                            (when (= 0 n) 0)
+                            (bm/key (b/nth timestamps 0)))
+          timestamp-max (or timestamp-max
+                            (when (= 0 n) 0)
+                            (bm/key (b/nth timestamps (dec n))))
+          timestamps    (bim/slice timestamps timestamp-min timestamp-max)
+
+          ; Linear scan to build up expected results
+          dir           (if (:reverse flags) -1 1)
+          start         (if (:reverse flags) (dec n) 0)
+          expected ; A vector of transfers
+          (loop [i       start
+                 results (transient [])]
+            (cond ; Full
+                  (= (count results) limit)
+                  (persistent! results)
+
+                  ; Out of bounds
+                  (not (< -1 i n))
+                  (persistent! results)
+
+                  ; Check this transfer
+                  true
+                  (let [i'       (+ i dir)
+                        transfer (bm/value (b/nth timestamps i))]
+                    (cond (and user-data (not= user-data (:user-data transfer)))
+                          (recur i' results)
+
+                          (and code (not= code (:code transfer)))
+                          (recur i' results)
+
+                          true
+                          (recur i' (conj! results transfer))))))]
+      expected))
+
+  (get-account-transfers [this invoke ok]
+    (let [account-filter (:value invoke)
+          expected       (get-account-transfers- this account-filter)
+          actual         (:value ok)
+          n              (count expected)]
+      ; Compare expected to actual
+      (if (= expected actual)
+        ; Good
+        (assoc this
+                :op-count (inc op-count)
+                ; Call this a single event, I guess?
+                :event-count (inc event-count))
+        ; Uh oh
+        (inconsistent
+          {:type        :model
+           :op-count    (:op-count this)
+           :event-count (:event-count this)
+           :filter      account-filter
+           :expected    expected
+           :actual      actual
+           :diff        (let [[- +] (diff expected actual)]
+                          {:expected -, :actual +})}))))
+
   IModel
   (step [this invoke ok]
     (let [this' (case (:f invoke)
-                  :create-accounts  (create-accounts this invoke ok)
-                  :create-transfers (create-transfers this invoke ok)
-                  :lookup-accounts  (lookup-accounts this invoke ok)
-                  :lookup-transfers (lookup-transfers this invoke ok)
+                  :create-accounts       (create-accounts this invoke ok)
+                  :create-transfers      (create-transfers this invoke ok)
+                  :lookup-accounts       (lookup-accounts this invoke ok)
+                  :lookup-transfers      (lookup-transfers this invoke ok)
+                  :get-account-transfers (get-account-transfers this invoke ok)
                   )]
       (if (inconsistent? this')
         (assoc this'
@@ -932,4 +1072,7 @@
             :transfer-timestamp -1
             :accounts  bm/empty
             :transfers bm/empty
-            :errors    bm/empty}))
+            :errors    bm/empty
+            :debit-account-id->timestamps   bm/empty
+            :credit-account-id->timestamps  bm/empty
+            }))

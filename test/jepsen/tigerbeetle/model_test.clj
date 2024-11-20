@@ -123,6 +123,11 @@
   [model invoke-val ok-val]
   (step* :lookup-transfers model invoke-val ok-val))
 
+(defn gat-step
+  "Shorthand for a get-account-transfers step."
+  [model invoke-val ok-val]
+  (step* :get-account-transfers model invoke-val ok-val))
+
 (defn consistent?
   "Not inconsistent? Returns consistent models."
   [model]
@@ -1031,3 +1036,15 @@
                         (assoc t4
                                :timestamp 204
                                )]))))))
+
+(deftest get-account-transfers-test
+  ; Very basic
+  (let [t3 (t 5N a1 a2 10N #{:pending})
+        t4 (t 6N a1 a3 8N)]
+    (is (consistent?
+          (-> init0
+              (ca-step [a1 a2 a3] [:ok :ok :ok])
+              (ct-step [t3 t4] [:ok :ok])
+              (gat-step {:account-id 1N
+                         :flags #{:debits}}
+                        (mapv tts [t3 t4])))))))
