@@ -382,6 +382,13 @@
         [_ _]
         this))))
 
+(defn wrap-gen
+  "Wraps a generator in one that maintains our state."
+  [gen]
+  (map->GenContext
+    {:gen gen
+     :state (state)}))
+
 (defn rand-event-count
   "Generates a random number of events (e.g. for a single create-transfer op)"
   []
@@ -419,22 +426,73 @@
   {:f       :get-account-transfers
    :value   (gen-get-account-transfers (:state ctx))})
 
-(defn wrap-gen
-  "Wraps a generator in one that maintains our state."
-  [gen]
-  (map->GenContext
-    {:gen gen
-     :state (state)}))
+(defn rand-weighted-index
+  "Takes a total weight and a vector of weights for a weighted discrete
+  distribution and generates a random index into those weights, with
+  probability proportionate to weight. Returns -1 when total-weight is 0."
+  [^long total-weight weights]
+  (if (= 0 total-weight)
+    -1
+    (let [r (dg/long 0 total-weight)]
+      (loop [i   0
+             sum 0]
+        (let [sum' (+ sum (weights i))]
+          (if (< r sum')
+            i
+            (recur (inc i) sum')))))))
+
+(defrecord WeightedMix [^long total-weight  ; Total weight
+                        weights             ; Vector of weights
+                        gens                ; Vector of generators
+                        ^long i]            ; Index of current weight/gen
+  gen/Generator
+  (op [this test ctx]
+    (when-not (= 0 (count gens))
+      (if-let [[op gen'] (gen/op (nth gens i) test ctx)]
+        ; TODO: handle :pending
+        [op (WeightedMix. total-weight
+                          weights
+                          (assoc gens i gen')
+                          (long (rand-weighted-index total-weight weights)))]
+        ; Out of ops from this gen; compact and retry.
+        (let [total-weight' (- total-weight (weights i))
+              weights'      (gen/dissoc-vec weights i)
+              gens'         (gen/dissoc-vec gens i)
+              i'            (rand-weighted-index total-weight' weights')]
+          (gen/op (WeightedMix. total-weight' weights' gens' i') test ctx)))))
+
+  (update [this test ctx event]
+    ; Propagate to each gen
+    (when-not (= 0 (count gens))
+      (WeightedMix. total-weight
+                    weights
+                    (mapv #(gen/update % test ctx event) gens)
+                    i))))
+
+(defn weighted-mix
+ "A generator which combines several generators in a random, weighted mixture.
+ Takes a flat series of `weight gen` pairs: a generator with weight 6 is chosen
+ three times as often as one with weight 2. Updates are propagated to all
+ generators."
+ [& weight-gens]
+ (assert (even? (count weight-gens)))
+ (when (seq weight-gens)
+   (let [weight-gens  (partition 2 weight-gens)
+         weights      (mapv first weight-gens)
+         total-weight (reduce + weights)
+         gens         (mapv second weight-gens)]
+     (WeightedMix. total-weight weights gens
+                   (rand-weighted-index total-weight weights)))))
 
 (defn gen
   "Generator of events during the main phase"
   []
-  (gen/mix
-    [create-accounts-gen
-     create-transfers-gen
-     lookup-accounts-gen
-     lookup-transfers-gen
-     get-account-transfers-gen]))
+  (weighted-mix
+    1  create-accounts-gen
+    10 create-transfers-gen
+    5  lookup-accounts-gen
+    5  lookup-transfers-gen
+    5  get-account-transfers-gen))
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"
