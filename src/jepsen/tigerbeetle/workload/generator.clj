@@ -230,11 +230,19 @@
   (gen-new-transfers [this n]
     (let [ids (range next-id (+ next-id n))
           ; TODO: occasionally generate incompatible ledgers
-          ledger (rand-ledger this)]
+          ledger (rand-ledger this)
+          debit-account-id (rand-account-id this ledger)
+          ; Mostly generate distinct debit/credit accounts
+          credit-account-id (loop [tries 3]
+                              ; TODO: sometimes a diff ledger
+                              (let [id (rand-account-id this ledger)]
+                                (if (and (pos? tries) (= id debit-account-id))
+                                  (recur (dec tries))
+                                  id)))]
       (mapv (fn [id]
               {:id                id
-               :debit-account-id  (rand-account-id this ledger)
-               :credit-account-id (rand-account-id this ledger)
+               :debit-account-id  debit-account-id
+               :credit-account-id credit-account-id
                :amount            (if (< (dg/double) 0.01)
                                     ; Sometimes we generate zero transfers
                                     0
