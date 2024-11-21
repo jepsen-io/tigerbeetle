@@ -71,7 +71,9 @@
               :not #{}
               :also-not #{}
               :stats {:create-account-results {}
-                      :create-transfer-results {}}
+                      :create-transfer-results {}
+                      :get-account-transfers-lengths
+                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
               :error-types #{:empty-transaction-graph}
               :empty-transaction-graph true}
              r))))
@@ -85,7 +87,9 @@
           r (check h)]
       (is (= {:valid? true
               :stats {:create-account-results {:ok 2}
-                      :create-transfer-results {}}
+                      :create-transfer-results {}
+                      :get-account-transfers-lengths
+                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
               :error-types #{}}
              r)))))
 
@@ -101,7 +105,9 @@
             :error-types #{:model}
             :stats {:create-account-results {:ok 1
                                              :ledger-must-not-be-zero 1}
-                    :create-transfer-results {}}
+                    :create-transfer-results {}
+                    :get-account-transfers-lengths
+                    {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
             :model {:op-count     0
                     :event-count  1
                     :op       (h 0)
@@ -122,7 +128,9 @@
     (is (= {:valid? false
             :error-types #{:model}
             :stats {:create-account-results {:ok 2}
-                    :create-transfer-results {}}
+                    :create-transfer-results {}
+                    :get-account-transfers-lengths
+                    {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
             :model {:op-count     1
                     :event-count 3
                     :op          (h 2)
@@ -159,7 +167,9 @@
                           :strong-serializable}
               :error-types #{:G0-realtime}
               :stats {:create-account-results {}
-                      :create-transfer-results {}}
+                      :create-transfer-results {}
+                      :get-account-transfers-lengths
+                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
               :G0-realtime
               [{:type  :G0-realtime
                 :cycle [(h 1) (h 3) (h 1)]
