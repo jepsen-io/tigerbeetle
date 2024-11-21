@@ -398,7 +398,7 @@
              (t/fuse
                {:chain-lengths chain-lengths}))]
     (->> (t/fuse
-           {:ok ok-fold
+           {:ok     ok-fold
             :invoke invoke-fold})
          (t/post-combine (fn [fused]
                            (reduce merge (vals fused))))

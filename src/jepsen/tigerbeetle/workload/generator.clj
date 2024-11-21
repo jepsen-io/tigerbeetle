@@ -442,7 +442,7 @@
   []
   (if (< (dg/double) 0.01)
     0
-    (inc (zipf 4 100))))
+    (inc (zipf 4 128))))
 
 (defn create-accounts-gen
   "A generator for create-accounts operations."
