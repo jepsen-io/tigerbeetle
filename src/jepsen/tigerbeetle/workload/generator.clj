@@ -100,6 +100,38 @@
          m
          xs))
 
+(defn chains
+  "Takes a vector of events and partitions them into chains with zipfian
+  distributed lengths, setting the :linked flag on events as appropriate."
+  [events]
+  (let [n (count events)]
+    (if (<= n 1)
+      events
+      (loop [i            0             ; Index
+             chain-length (zipf 2.0 n)  ; How many more events in this chain
+             events       (transient events)]
+        (cond (= i n)
+              ; Done.
+              (persistent!
+                ; Almost never generate a trailing linked event
+                (if (< (dg/double) 1/1000)
+                  events
+                  (assoc! events (dec n)
+                          (update (get events (dec n)) :flags disj :linked))))
+
+              ; Chain done; re-roll length
+              (= chain-length 0)
+              (recur (inc i)
+                     (zipf 2.0 n)
+                     events)
+
+              ; Link
+              true
+              (recur (inc i)
+                     (dec chain-length)
+                     (assoc! events i
+                             (update (get events i) :flags conj :linked))))))))
+
 ; The State encapsulates the information we need to know about the current
 ; state of the database in order to generate new invocations. Mutations are
 ; split into pairs: gen-*, which generates data for an invocation, and a
@@ -129,6 +161,9 @@
 
   (gen-new-accounts [state n]
                "Generates a series of n new accounts.")
+
+  (gen-new-transfer [state id]
+                    "Generates a single transfer with the given ID.")
 
   (gen-new-transfers [state n]
                      "Generates a series of n transfers between accounts.")
@@ -219,40 +254,45 @@
 
   (gen-new-accounts [this n]
     (let [ids (range next-id (+ next-id n))]
-       (mapv (fn [id]
-               {:id        id
-                :ledger    (rand-ledger this)
-                :code      (rand-code this)
-                :user-data (rand-user-data this)
-                :flags     #{}})
-             ids)))
+      (->> ids
+           (mapv (fn [id]
+                   {:id        id
+                    :ledger    (rand-ledger this)
+                    :code      (rand-code this)
+                    :user-data (rand-user-data this)
+                    :flags     #{}}))
+           chains)))
 
-  (gen-new-transfers [this n]
-    (let [ids (range next-id (+ next-id n))
-          ; TODO: occasionally generate incompatible ledgers
+  (gen-new-transfer [this id]
+    (let [; TODO: occasionally generate incompatible ledgers
           ledger (rand-ledger this)
           debit-account-id (rand-account-id this ledger)
           ; Mostly generate distinct debit/credit accounts
           credit-account-id (loop [tries 3]
-                              ; TODO: sometimes a diff ledger
                               (let [id (rand-account-id this ledger)]
                                 (if (and (pos? tries) (= id debit-account-id))
                                   (recur (dec tries))
-                                  id)))]
-      (mapv (fn [id]
-              {:id                id
-               :debit-account-id  debit-account-id
-               :credit-account-id credit-account-id
-               :amount            (if (< (dg/double) 0.01)
-                                    ; Sometimes we generate zero transfers
-                                    0
-                                    ; But mostly, zipf-distributed ones
-                                    (inc (zipf 1000)))
-               :ledger            ledger
-               :code              (rand-code this)
-               :user-data         (rand-user-data this)
-               :flags             #{}})
-            ids)))
+                                  id)))
+          flags #{}]
+      {:id                id
+       :debit-account-id  debit-account-id
+       :credit-account-id credit-account-id
+       :amount            (if (< (dg/double) 0.01)
+                            ; Sometimes we generate zero transfers
+                            0
+                            ; But mostly, zipf-distributed ones
+                            (inc (zipf 1000)))
+       :ledger            ledger
+       :code              (rand-code this)
+       :user-data         (rand-user-data this)
+       :flags             flags}))
+
+  (gen-new-transfers [this n]
+    (let [ids (range next-id (+ next-id n))]
+      (->> ids
+           (mapv (fn [id]
+                   (gen-new-transfer this id)))
+           chains)))
 
   (add-new-accounts [this new-accounts]
     (let [ids (mapv :id new-accounts)
