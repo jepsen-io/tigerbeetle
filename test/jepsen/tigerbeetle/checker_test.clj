@@ -73,6 +73,8 @@
               :stats {:create-account-results {}
                       :create-transfer-results {}
                       :get-account-transfers-lengths
+                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
+                      :chain-lengths
                       {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
               :error-types #{:empty-transaction-graph}
               :empty-transaction-graph true}
@@ -89,7 +91,9 @@
               :stats {:create-account-results {:ok 2}
                       :create-transfer-results {}
                       :get-account-transfers-lengths
-                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
+                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
+                      :chain-lengths
+                      {0.0 1.0, 0.3 1.0, 0.5 1.0, 0.9 1.0, 0.99 1.0, 1.0 1.0}}
               :error-types #{}}
              r)))))
 
@@ -107,7 +111,9 @@
                                              :ledger-must-not-be-zero 1}
                     :create-transfer-results {}
                     :get-account-transfers-lengths
-                    {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
+                    {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
+                    :chain-lengths
+                    {0.0 1.0, 0.3 1.0, 0.5 1.0, 0.9 1.0, 0.99 1.0, 1.0 1.0}}
             :model {:op-count     0
                     :event-count  1
                     :op       (h 0)
@@ -130,7 +136,9 @@
             :stats {:create-account-results {:ok 2}
                     :create-transfer-results {}
                     :get-account-transfers-lengths
-                    {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
+                    {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
+                    :chain-lengths
+                    {0.0 1.0, 0.3 1.0, 0.5 1.0, 0.9 1.0, 0.99 1.0, 1.0 1.0}}
             :model {:op-count     1
                     :event-count 3
                     :op          (h 2)
@@ -169,6 +177,8 @@
               :stats {:create-account-results {}
                       :create-transfer-results {}
                       :get-account-transfers-lengths
+                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
+                      :chain-lengths
                       {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
               :G0-realtime
               [{:type  :G0-realtime

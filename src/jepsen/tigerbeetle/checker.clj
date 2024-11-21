@@ -343,9 +343,21 @@
                                    get-account-transfers. Helpful for tuning
                                    generators so we actually do queries that
                                    return something.
+     :chain-lengths                A quantile distribution of the lengths
+                                   of chains across create-account and
+                                   -transfer ops.
      }"
   [history]
-  (let [create-account-results
+  (let [quantiles (fn [d]
+                    (sorted-map
+                      0.0  (tq/quantile d 0)
+                      0.3  (tq/quantile d 0.3)
+                      0.5  (tq/quantile d 0.5)
+                      0.9  (tq/quantile d 0.9)
+                      0.99 (tq/quantile d 0.99)
+                      1.0  (tq/quantile d 1)))
+
+        create-account-results
         (->> (t/filter (h/has-f? :create-accounts))
              (t/mapcat :value)
              t/frequencies)
@@ -358,21 +370,38 @@
         get-account-transfers-lengths
         (->> (t/filter (h/has-f? :get-account-transfers))
              (t/map (comp count :value))
-             (tm/digest (partial tq/hdr-histogram
-                                 {:highest-to-lowest-value-ratio 1e5}))
-             (t/post-combine (fn [d]
-                                 (sorted-map
-                                   0.0  (tq/quantile d 0)
-                                   0.3  (tq/quantile d 0.3)
-                                   0.5  (tq/quantile d 0.5)
-                                   0.9  (tq/quantile d 0.9)
-                                   0.99 (tq/quantile d 0.99)
-                                   1.0  (tq/quantile d 1)))))]
-    (->> (t/filter h/ok?)
-         (t/fuse
-           {:create-account-results       create-account-results
-            :create-transfer-results      create-transfer-results
-            :get-account-transfers-lengths get-account-transfers-lengths})
+             (tm/digest tq/hdr-histogram)
+             (t/post-combine quantiles))
+
+        ok-fold
+        (->> (t/filter h/ok?)
+             (t/fuse
+               {:create-account-results       create-account-results
+                :create-transfer-results      create-transfer-results
+                :get-account-transfers-lengths get-account-transfers-lengths}))
+
+        chain-lengths
+        (->> (t/filter (h/has-f? #{:create-accounts :create-transfers}))
+             (t/mapcat (fn [op]
+                         (loopr [size  1
+                                 sizes (transient [])]
+                                [event (:value op)]
+                                (if (:linked (:flags event))
+                                  (recur (inc size) sizes)
+                                  (recur 1 (conj! sizes size)))
+                                (persistent! sizes))))
+             (tm/digest tq/hdr-histogram)
+             (t/post-combine quantiles))
+
+        invoke-fold
+        (->> (t/filter h/invoke?)
+             (t/fuse
+               {:chain-lengths chain-lengths}))]
+    (->> (t/fuse
+           {:ok ok-fold
+            :invoke invoke-fold})
+         (t/post-combine (fn [fused]
+                           (reduce merge (vals fused))))
          (h/tesser history))))
 
 (defn check-duplicate-timestamps
