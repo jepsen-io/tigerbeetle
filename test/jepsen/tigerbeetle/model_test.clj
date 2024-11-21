@@ -409,6 +409,17 @@
                              :flags #{:imported})]
                      [:imported-event-timestamp-must-not-regress])))))
 
+; When we execute a failed chain, events are going to succeed but be missing
+; timestamps. We need to be OK with speculatively executing those events!
+(deftest create-account-chain-with-missing-timestamp
+  (let [model (init {:account-id->timestamp bm/empty
+                     :transfer-id->timestamp bm/empty})]
+    (is (consistent?
+          (ca-step model
+                   [(assoc a1 :flags #{:linked})
+                    (assoc a2 :code 0)]
+                   [:linked-event-failed :code-must-not-be-zero])))))
+
 ;; Transfers
 
 (deftest basic-transfer-test
@@ -997,6 +1008,20 @@
                    [(assoc (t 3N a1 a2 1N #{:pending})
                            :timeout timeout)]
                    [:overflows-timeout])))))
+
+
+; When we execute a failed chain, events are going to succeed but be missing
+; timestamps. We need to be OK with speculatively executing those events!
+(deftest create-transfer-chain-with-missing-timestamp
+  (let [model (init {:account-id->timestamp bm/empty
+                     :transfer-id->timestamp bm/empty})]
+    (is (consistent?
+          (-> model
+              (ca-step [a1 a2] [:ok :ok])
+              (ct-step [(t 10 a1 a2 1N #{:linked})
+                        (t 11 a1 a1 1N)]
+                   [:linked-event-failed
+                    :accounts-must-be-different]))))))
 
 (deftest exceeds-credits-test
   (let [a1 (update a1 :flags conj :debits-must-not-exceed-credits)]

@@ -604,7 +604,15 @@
         (letr [ts      (if imported?
                          (:timestamp account)
                          (bm/get account-id->timestamp id))
-               _       (assert ts (str "No timestamp known for account " id))
+               ; If we *don't* have a timestamp, it's very likely that this
+               ; event is going to succeed now, but be rolled back due to a
+               ; later failed event in the chain. We assign it a speculative
+               ; timestamp and mark the transfer as :speculative?.
+               speculative? (nil? ts)
+               ts           (if speculative? (inc timestamp) ts)
+               account      (if speculative?
+                              (assoc account :speculative? true)
+                              account)
                ; Advance clocks to the new timestamp
                this' (advance-account-timestamp this ts account)
                _     (when (inconsistent? this') (return this'))
@@ -842,7 +850,16 @@
            ts (if imported?
                 ts
                 (bm/get transfer-id->timestamp id))
-           _  (assert ts (str "No timestamp known for transfer " id))
+           ; If we don't have a timestamp, it's very likely that this event
+           ; succeeds now, but is rolled back due to a later failure in a
+           ; chain. We assign it a speculative timestamp and mark the transfer
+           ; as :speculative?.
+           speculative? (nil? ts)
+           ts           (if speculative? (inc timestamp) ts)
+           transfer     (if speculative?
+                          (assoc transfer :speculative? true)
+                          transfer)
+
            ; Timeout overflow
            _ (when (< Long/MAX_VALUE
                       (+ ts (* (:timeout transfer 0) 1000000000N)))
