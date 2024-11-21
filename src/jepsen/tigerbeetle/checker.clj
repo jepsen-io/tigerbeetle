@@ -74,7 +74,9 @@
             [jepsen [checker :as checker]
                     [history :as h]]
             [jepsen.tigerbeetle [model :as model]]
-            [tesser.core :as t])
+            [tesser [core :as t]
+                    [math :as tm]
+                    [quantiles :as tq]])
   (:import (jepsen.history Op)))
 
 
@@ -336,7 +338,12 @@
     {:create-transfer-results     A map of result frequencies for
                                   create-transfers
      :create-account-results      A map of result frequencies for
-                                  create-accounts}"
+                                  create-accounts
+     :get-account-transfer-lengths A quantile distribution of the lengths of
+                                   get-account-transfers. Helpful for tuning
+                                   generators so we actually do queries that
+                                   return something.
+     }"
   [history]
   (let [create-account-results
         (->> (t/filter (h/has-f? :create-accounts))
@@ -346,11 +353,26 @@
         create-transfer-results
         (->> (t/filter (h/has-f? :create-transfers))
              (t/mapcat :value)
-             t/frequencies)]
+             t/frequencies)
+
+        get-account-transfers-lengths
+        (->> (t/filter (h/has-f? :get-account-transfers))
+             (t/map (comp count :value))
+             (tm/digest (partial tq/hdr-histogram
+                                 {:highest-to-lowest-value-ratio 1e5}))
+             (t/post-combine (fn [d]
+                                 (sorted-map
+                                   0.0  (tq/quantile d 0)
+                                   0.3  (tq/quantile d 0.3)
+                                   0.5  (tq/quantile d 0.5)
+                                   0.9  (tq/quantile d 0.9)
+                                   0.99 (tq/quantile d 0.99)
+                                   1.0  (tq/quantile d 1)))))]
     (->> (t/filter h/ok?)
          (t/fuse
-           {:create-account-results create-account-results
-            :create-transfer-results create-transfer-results})
+           {:create-account-results       create-account-results
+            :create-transfer-results      create-transfer-results
+            :get-account-transfers-lengths get-account-transfers-lengths})
          (h/tesser history))))
 
 (defn check-duplicate-timestamps
