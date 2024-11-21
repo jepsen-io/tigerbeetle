@@ -496,11 +496,11 @@
   "Generator of events during the main phase"
   []
   (weighted-mix
-    1  create-accounts-gen
-    10 create-transfers-gen
-    5  lookup-accounts-gen
-    5  lookup-transfers-gen
-    5  get-account-transfers-gen))
+    1   create-accounts-gen
+    100 create-transfers-gen
+    20  lookup-accounts-gen
+    20  lookup-transfers-gen
+    20  get-account-transfers-gen))
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"
