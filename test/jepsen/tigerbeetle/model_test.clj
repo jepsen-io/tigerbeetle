@@ -284,12 +284,25 @@
 
 (deftest create-account-linked-event-chain-open-test
   ; If we leave an account chain open, it should explode.
-  (is (consistent?
-        (ca-step init0
-                 [(assoc a1 :flags #{:linked})
-                  (assoc a2 :flags #{:linked})]
-                 [:linked-event-failed
-                  :linked-event-chain-open]))))
+  (testing "basic"
+    (is (consistent?
+          (ca-step init0
+                   [(assoc a1 :flags #{:linked})
+                    (assoc a2 :flags #{:linked})]
+                   [:linked-event-failed
+                    :linked-event-chain-open]))))
+
+  (testing "failure + open"
+    (is (consistent?
+          (ca-step init0
+                   [(assoc a1 :flags #{:linked})
+                    ; Fails due to 0 code
+                    (assoc a2 :flags #{:linked} :code 0)
+                    ; Fails due to open chain--reported separately!
+                    (assoc a3 :flags #{:linked})]
+                   [:linked-event-failed
+                    :code-must-not-be-zero
+                    :linked-event-chain-open])))))
 
 (deftest create-account-timestamp-must-be-zero-test
   ; Creating an event with a nonzero timestamp is bad

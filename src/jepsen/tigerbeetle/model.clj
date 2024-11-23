@@ -204,6 +204,41 @@
     (update model :errors bm/put (:id event) error)
     model))
 
+(defn create-chain-check-open!
+  "There is a special kind of error which is layered on *top* of the normal
+  create-chain logic. If a linked event chain is left open, we flag that error
+  *in addition* to any other errors in the chain.
+
+  Takes:
+
+  - A vector of events from a single chain
+  - An array (mutated in-place) of results from applying those events.
+  - An OK model, resulting from applying those events OK. This is `nil` if we
+    were unable to apply all events.
+  - An error model, either the original, or the original plus remembered
+    errors.
+
+  Returns [model' expected-results], aborting the chain if it ends with a
+  :linked flag. `model'` is the OK model, if given, or the error model.
+  Expected-results is a Bifurcan list."
+  [events ^objects results ok-model error-model]
+  (let [n (alength results)
+        n- (dec n)]
+    (if (and (< 0 n) (:linked (:flags (peek events))))
+      ; Linked chain open.
+      (do ; Go back and flip any OK results to failures.
+          (loop [i 0]
+            (when (< i n-)
+              (when (identical? :ok (aget results i))
+                (aset results i :linked-event-failed))
+              (recur (inc i))))
+          ; Set last result to linked-event-chain-open
+          (aset results (dec n) :linked-event-chain-open)
+          ; Construct vector and return
+          [error-model (bl/from-array results)])
+      ; Not open
+      [(or ok-model error-model) (bl/from-array results)])))
+
 (defn create-chain
   "Shared logic for creating a single chain of accounts or transfers. Takes a
   model, a function to create a single event in a model, a list of events,
@@ -215,41 +250,43 @@
   chain."
   [model create events import?]
   ; Note that *every* response to creating a chain of accounts is either
-  ; entirely :ok, or entirely :linked-event-failed with the exception of a
-  ; single error.
+  ; (entirely :ok, or entirely :linked-event-failed with the exception of a
+  ; single error), with the exception of :linked-event-chain-open, which takes
+  ; place regardless.
   (let [n           (count events)
         results     (object-array n)
         event-count (:event-count model)]
     (loopr [i        0
             model'   model]
            [event events]
-           (let [result (if (and (= i (dec n))
-                                 (:linked (:flags event)))
-                          :linked-event-chain-open
-                          (create model' event import?))]
+           (let [result (create model' event import?)]
              (cond
                ; Inconsistent; abort here. No point computing results.
                (inconsistent? result)
                [result nil]
 
-               ; Logical error; fail chain and return model without having
-               ; applied ops.
+               ; Logical error; fail chain immediately.
                (keyword? result)
                (do (Arrays/fill results :linked-event-failed)
                    (aset results i result)
-                   [(-> model
-                        (remember-error event result)
-                        (assoc :event-count (+ event-count n)))
-                    (bl/from-array results)])
+                   (create-chain-check-open!
+                     events
+                     results
+                     nil
+                     (-> model
+                         (remember-error event result)
+                         (assoc :event-count (+ event-count n)))))
 
                ; Good, move on
                true
                (recur (inc i) result)))
            ; Completed successfully
            (do (Arrays/fill results :ok)
-               [(assoc model'
-                       :event-count (+ event-count n))
-                (bl/from-array results)]))))
+               (create-chain-check-open!
+                 events
+                 results
+                 (assoc model' :event-count (+ event-count n))
+                 model)))))
 
 (defn validate
   "Takes a model, an invoke, an OK, an event name (e.g. :transfer or :event), a
