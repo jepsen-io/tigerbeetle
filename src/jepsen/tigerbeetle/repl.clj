@@ -1,6 +1,7 @@
 (ns jepsen.tigerbeetle.repl
   "The REPL drops you here."
-  (:require [jepsen [history :as h]
+  (:require [clojure.tools.logging :refer [info warn]]
+            [jepsen [history :as h]
                     [store :as store]]
             [tesser.core :as t]))
 
@@ -42,3 +43,24 @@
                            (:value op))))
          (t/first)
          (h/tesser history))))
+
+(defn transfers-debiting
+  "Given a history, returns all invoked transfers which debited a specific
+  account, partitioned by type: {:ok [t1 t2 ...], :info [...], :fail [...]}."
+  [account-id history]
+  (h/ensure-pair-index history)
+  (->> (t/filter (h/has-f? :create-transfers))
+       (t/filter h/invoke?)
+       (t/keep (fn [op]
+                 (let [transfers (->> (:value op)
+                                      (filter #(= account-id
+                                                  (:debit-account-id %)))
+                                      (into []))]
+                   (when (seq transfers)
+                     (let [complete (h/completion history op)]
+                       {:type      (:type complete)
+                        :transfers transfers})))))
+       (t/group-by :type)
+       (t/mapcat :transfers)
+       (t/into [])
+       (h/tesser history)))
