@@ -266,7 +266,8 @@
   (when-let [; What map are we going to look in?
              id->ts (case (:f op)
                       :create-accounts account-id->timestamp
-                      :create-transfers transfer-id->timestamp)]
+                      :create-transfers transfer-id->timestamp
+                      nil)]
     (let [invoke (h/invocation history op)]
       (when-let [event (first (:value invoke))]
         (bm/get id->ts (:id event))))))
@@ -283,7 +284,8 @@
   maps. Associates actually-ok ops with a :timestamp and :value :unknown."
   [{:keys [history account-id->timestamp transfer-id->timestamp]}]
   (h/map (fn resolve [op]
-           (if (identical? (:type op) :info)
+           (if (and (h/client-op? op)
+                    (h/info? op))
              (if-let [ts (resolve-ops-infer-timestamp
                            history
                            account-id->timestamp
