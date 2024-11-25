@@ -58,7 +58,8 @@
   stale read could manifest as what looks like a more serious anomaly--say, a
   torn transaction violating model consistency. We may want to add more
   provable Elle dependencies to get better locality."
-  (:require [clojure.core [match :refer [match]]]
+  (:require [clojure [pprint :refer [pprint]]]
+            [clojure.core [match :refer [match]]]
             [clojure.tools.logging :refer [info warn]]
             [bifurcan-clj [core :as b]
                           [int-map :as bim]
@@ -256,49 +257,42 @@
        bset-union
        (h/tesser history)))
 
-(defn op-actually-ok?
-  "Takes a history, a set of OK account ids and OK transfer ids, and a single
-  operation of type :info. Returns true if any of the operation's effects were
-  in the OK accounts/transfers."
-  [history ok-accounts ok-transfers op]
-  (assert (h/info? op))
-  (if-let [; What set are we going to look in?
-           ok-ids (case (:f op)
-                    :create-accounts ok-accounts
-                    :create-transfers ok-transfers
-                    nil)]
+(defn resolve-ops-infer-timestamp
+  "Takes a history, a map of account IDs to timestamps, one for transfer IDs to
+  timestamps, and an :info operation. Returns nil if the first write appears in
+  those maps. If one does appear, returns the timestamp of the first observed
+  effect. Empty writes and all reads return nil."
+  [history account-id->timestamp transfer-id->timestamp op]
+  (when-let [; What map are we going to look in?
+             id->ts (case (:f op)
+                      :create-accounts account-id->timestamp
+                      :create-transfers transfer-id->timestamp)]
     (let [invoke (h/invocation history op)]
-      ; Look for an ID we read later
-      (loopr []
-             [event (:value invoke)]
-             (if (bs/contains? ok-ids (:id event))
-               true
-               (recur))
-             false))
-    ; This is not a create op; must be a read. We can safely fail this.
-    false))
+      (when-let [event (first (:value invoke))]
+        (bm/get id->ts (:id event))))))
 
 (defn resolve-ops
   "Takes a map of:
 
-    :history              The history
-    :seen-accounts        The set of all accounts IDs we read
-    :seen-transfers       The set of all transfer IDs we read
+    :history                  The history
+    :account-id->timestamp    A map of observed account IDs to timestamps
+    :transfer-id->timestamp   A map of observed transfer IDs to timestamps
 
-  Runs through the history and resolves any info operations to either :ok or
-  :fail based on presence in ok-accounts or ok-transfers. We construct a new
-  history in which no writes are :info, and also a collection of atomicity
-  errors when some but not all of an operation's writes occur."
-  [{:keys [history ok-accounts ok-transfers]}]
-  ; TODO: precompile this as a bitset
-  (h/map (fn [op]
+  Returns a new history, like the given history, but where any info operations
+  are resolved to either :ok or :fail based on presence in the id->timestamp
+  maps. Associates actually-ok ops with a :timestamp and :value :unknown."
+  [{:keys [history account-id->timestamp transfer-id->timestamp]}]
+  (h/map (fn resolve [op]
            (if (identical? (:type op) :info)
-             (assoc op :type (if (op-actually-ok? history
-                                                  ok-accounts
-                                                  ok-transfers
-                                                  op)
-                               :ok
-                               :fail))
+             (if-let [ts (resolve-ops-infer-timestamp
+                           history
+                           account-id->timestamp
+                           transfer-id->timestamp
+                           op)]
+               (assoc op :type :ok, :value :unknown, :timestamp ts)
+               ; No observed timestamp; must have failed
+               (assoc op :type :fail))
+             ; :ok or :info op
              op))
          history))
 
@@ -376,8 +370,8 @@
         ok-fold
         (->> (t/filter h/ok?)
              (t/fuse
-               {:create-account-results       create-account-results
-                :create-transfer-results      create-transfer-results
+               {:create-account-results        create-account-results
+                :create-transfer-results       create-transfer-results
                 :get-account-transfers-lengths get-account-transfers-lengths}))
 
         chain-lengths
@@ -500,16 +494,17 @@
                                       (account-id->timestamp history))
         transfer-id->timestamp (h/task history transfer-id->timestamp []
                                       (transfer-id->timestamp history))
-        seen-accounts  (h/task history seen-accounts []
-                               (seen-accounts history))
-        seen-transfers (h/task history seen-transfers []
-                               (seen-transfers history))
-        resolved-history (h/task history resolve-ops [sa seen-accounts
-                                                      st seen-transfers]
+        ;seen-accounts  (h/task history seen-accounts []
+        ;                       (seen-accounts history))
+        ;seen-transfers (h/task history seen-transfers []
+        ;                       (seen-transfers history))
+        resolved-history (h/task history resolve-ops
+                                 [ait account-id->timestamp
+                                  tit transfer-id->timestamp]
                                  (resolve-ops {:history history
-                                               :seen-accounts sa
-                                               :seen-transfers st}))
-        model-check (h/task history model-check [h resolved-history
+                                               :account-id->timestamp ait
+                                               :transfer-id->timestamp tit}))
+        model-check (h/task history model-check [h   resolved-history
                                                  ait account-id->timestamp
                                                  tit transfer-id->timestamp]
                             (model-check {:history h

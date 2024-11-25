@@ -291,28 +291,33 @@
 (defn validate
   "Takes a model, an invoke, an OK, an event name (e.g. :transfer or :event), a
   vector of events, a Bifurcan list of expected results, and a vector of actual
-  results. Returns model if the results match, or an inconsistent state."
+  results. Returns model if the results match, or an inconsistent state.
+
+  The special `actual` value :unknown indicates that we don't know what the
+  client returned, and that we should allow any results."
   [model invoke ok event-name events expected actual]
-  (if-let [i (first-not=-index expected actual)]
-    (if (not= (b/size expected) (count actual))
-      (inconsistent
-        {:type           :model
-         :op-count       (:op-count model)
-         :event-count    (- (:event-count model) (- (count events) i))
-         :expected       (datafy expected)
-         :actual         actual
-         :expected-count (b/size expected)
-         :actual-count   (count actual)})
-      (inconsistent
-        ; We have to unwind the event-count here, because our apply-chain logic
-        ; advances it either way.
-        {:type        :model
-         :op-count    (:op-count model)
-         :event-count (- (:event-count model) (- (count events) i))
-         event-name   (nth events i)
-         :expected    (b/nth expected i)
-         :actual      (nth actual i)}))
-    model))
+  (if (identical? :unknown actual)
+    model
+    (if-let [i (first-not=-index expected actual)]
+      (if (not= (b/size expected) (count actual))
+        (inconsistent
+          {:type           :model
+           :op-count       (:op-count model)
+           :event-count    (- (:event-count model) (- (count events) i))
+           :expected       (datafy expected)
+           :actual         actual
+           :expected-count (b/size expected)
+           :actual-count   (count actual)})
+        (inconsistent
+          ; We have to unwind the event-count here, because our apply-chain
+          ; logic advances it either way.
+          {:type        :model
+           :op-count    (:op-count model)
+           :event-count (- (:event-count model) (- (count events) i))
+           event-name   (nth events i)
+           :expected    (b/nth expected i)
+           :actual      (nth actual i)}))
+      model)))
 
 (defn create-helper
   "Common logic for create-transfers and create-accounts. Takes a model, an
