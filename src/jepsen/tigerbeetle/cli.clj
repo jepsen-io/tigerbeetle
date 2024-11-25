@@ -48,7 +48,7 @@
 (def special-nemeses
   "A map of special nemesis names to collections of faults."
   {:none []
-   :all [:partition :pause :kill]})
+   :all [:partition :pause :kill :clock]})
 
 (defn parse-comma-kws
   "Takes a comma-separated string and returns a collection of keywords."
@@ -85,14 +85,14 @@
         db            (db/db opts)
         os            debian/os
         nemesis       (nemesis/package
-                        {:db db
-                         :nodes (:nodes opts)
-                         :faults (:nemesis opts)
-                         :partition {:targets [:one :majority]}
-                         :pause {:targets [:one :majority :all]}
-                         :kill {:targets [:one :majority :all]}
+                        {:db            db
+                         :nodes         (:nodes opts)
+                         :faults        (:nemesis opts)
+                         :partition     {:targets [:one :majority]}
+                         :pause         {:targets [:one :majority :all]}
+                         :kill          {:targets [:one :majority :all]}
                          :stable-period (:nemesis-stable-period opts)
-                         :interval (:nemesis-interval opts)})
+                         :interval      (:nemesis-interval opts)})
         ; Main workload
         generator (gen/phases
                     (->> (:generator workload)
@@ -156,7 +156,7 @@
     :validate [pos? "Must be a positive number."]]
 
    [nil "--nemesis-stable-period SECS" "If given, rotates the mixture of nemesis faults over time with roughly this period."
-    :default 30
+    :default  nil
     :parse-fn parse-long
     :validate [pos? "Must be a positive number."]]
 

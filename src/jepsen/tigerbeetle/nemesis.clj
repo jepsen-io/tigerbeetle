@@ -62,7 +62,7 @@
         packages
         (->> (concat
                ; Custom packages
-               [(nc/nemesis-packages opts)])
+               (nc/nemesis-packages opts))
              (filter :generator))
 
         nsp (:stable-period opts)]
