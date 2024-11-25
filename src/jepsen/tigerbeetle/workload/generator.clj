@@ -350,10 +350,10 @@
                :account-id  (rand-account-id this)
                :limit       (dg/long 1 32)}
         (< (dg/double) 1/4)
-        (assoc :min-timestamp t1)
+        (assoc :timestamp-min t1)
 
         (< (dg/double) 1/4)
-        (assoc :max-timestamp t2)
+        (assoc :timestamp-max t2)
 
         ; These are relatively unlikely to match, so we generate them
         ; infrequently

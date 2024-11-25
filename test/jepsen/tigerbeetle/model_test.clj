@@ -141,6 +141,28 @@
      (is (consistent? m#))
      m#))
 
+(defn account-filter->pred
+  "Takes an account filter and returns a function of a transfer which returns
+  true iff the filter matches that transfer. Remember, account filters actually
+  filter transfers, not accounts!"
+  [{:keys [account-id
+           user-data
+           code
+           timestamp-min
+           timestamp-max
+           limit
+           flags] :as account-filter}]
+  (let [debits? (:debits flags)
+        credits? (:credits flags)]
+    (fn pred [t]
+      (and
+        (or (and debits? (= account-id (:debit-account-id t)))
+            (and credits? (= account-id (:credit-account-id t))))
+        (or (nil? user-data) (= user-data (:user-data t)))
+        (or (nil? code) (= code (:code t)))
+        (or (nil? timestamp-min) (<= timestamp-min (:timestamp t)))
+        (or (nil? timestamp-max) (<= (:timestamp t) timestamp-max))))))
+
 (deftest stats-test
   (let [c (fn [model]
             (select-keys (check-consistent model)
@@ -1185,3 +1207,91 @@
                        :user-data 10}
                       [t10']))))
     ))
+
+(deftest get-account-transfers-missing-transfer-test
+  ; A real-world example
+  (let [transfers'
+        [{:amount 48,
+          :ledger 1,
+          :debit-account-id 65042N,
+          :pending-id 0N,
+          :credit-account-id 2235N,
+          :user-data 12,
+          :id 102324N,
+          :code 47,
+          :timeout 0,
+          :timestamp 1732233042349432845,
+          :flags #{:linked}}
+         {:amount 731,
+          :ledger 1,
+          :debit-account-id 65042N,
+          :pending-id 0N,
+          :credit-account-id 182045N,
+          :user-data 12,
+          :id 278501N,
+          :code 666,
+          :timeout 0,
+          :timestamp 1732233124092998809,
+          :flags #{}}
+         {:amount 256,
+          :ledger 1,
+          :debit-account-id 65042N,
+          :pending-id 0N,
+          :credit-account-id 2236N,
+          :user-data 12,
+          :id 928341N,
+          :code 24,
+          :timeout 0,
+          :timestamp 1732233532529785590,
+          :flags #{:linked}}
+         {:amount 42,
+          :ledger 1,
+          :debit-account-id 65042N,
+          :pending-id 0N,
+          :credit-account-id 62814N,
+          :user-data 12,
+          :id 1032746N,
+          :code 19,
+          :timeout 0,
+          :timestamp 1732233617222706156,
+          :flags #{}}]
+        ; Construct accounts that will work with these transfers
+        accounts' (->> (concat (map :credit-account-id transfers')
+                               (map :debit-account-id transfers'))
+                       distinct
+                       (mapv (fn [id]
+                               {:id id
+                                :user-data 1
+                                :ledger (:ledger (first transfers'))
+                                :code 3
+                                :flags #{}
+                                :timestamp (long id)})))
+        account-id->timestamp (bm/from (map (juxt :id :timestamp) accounts'))
+        transfer-id->timestamp (bm/from (map (juxt :id :timestamp) transfers'))
+        ; Sort by timestamp and strip out timestamp
+        strip (fn [xs]
+                (->> xs
+                     (sort-by :timestamp)
+                     (mapv #(dissoc % :timestamp))))
+        accounts (strip accounts')
+        transfers (strip transfers')
+        ; Construct a model with these accounts and transfers
+        model (-> (init {:account-id->timestamp account-id->timestamp
+                         :transfer-id->timestamp transfer-id->timestamp})
+                  (ca-step accounts  (mapv (constantly :ok) accounts))
+                  (ct-step transfers (mapv (constantly :ok) transfers)))
+        _ (is (consistent? model))
+        ; Now query it. We expect this to match the first two transfers.
+        afilter {:flags #{:debits},
+                 :account-id 65042N,
+                 :limit 26,
+                 :timestamp-max 1732233258576209408,
+                 :user-data 12}
+        ; Sanity check...
+        _ (is (= [(transfers' 0)
+                  (transfers' 1)]
+                 (filter (account-filter->pred afilter) transfers')))
+        model (gat-step model
+                        afilter
+                        [(transfers' 0) (transfers' 1)])]
+    (is (consistent? model))))
