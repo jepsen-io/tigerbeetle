@@ -8,11 +8,10 @@
   32-bit or ~50-bit ints, and we need 128-bit ints. Clojure's core.logic can do
   bigints, but blows up the compiler when given a few hundred lvars."
   (:require [clojure [pprint :refer [pprint]]]
-            [clojure.core.logic :as l]
-            [clojure.core.logic.fd :as lfd]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [history :as h]]
-            [tesser.core :as t]))
+            [tesser.core :as t])
+  (:import (jepsen.tigerbeetle SubsetSum)))
 
 (defn possible-transfers
   "Finds all transfers which were invoked prior to the given index,
@@ -36,43 +35,34 @@
        (t/into [])
        (h/tesser history)))
 
-(defn split-vec
-  "Splits a vector into left and right halves, approximately at the midpoint."
-  [v]
-  (let [n (count v)]
-    (case n
-      0 [[] []]
-      1 [v []]
-      (let [half (long (/ n 2))]
-        [(subvec v 0 half) (subvec v half n)]))))
+(defn applied-transfers
+  "Takes a list of amounts (bigintegers) and a list of transfer maps (e.g. with
+  bigint :amount), in the same order, but where the amounts are drawn from a
+  subset of the transfers. Returns the transfers which contributed those
+  amounts, with :applied? true or false, depending on whether they appeared in
+  amounts."
+  [amounts transfers]
+  (cond ; No more amounts to find
+        (nil? (seq amounts))
+        []
 
-(defn sum-tree
-  "Takes a target value (either an lvar or a literal) and a vector of lvars, as
-  symbols. Returns a map of:
+        ; Out of transfers, uh oh
+        (nil? (seq transfers))
+        (throw (IllegalStateException.
+                 (str "Ran out of transfers, still looking for"
+                      amounts)))
 
-   {:constraints    A collection of logic constraints which ensure the sum holds
-    :new-lvars      A collection of logic variables you must declare.}"
-  ([target lvars]
-   (let [new-lvars   (atom [])
-         constraints (vec (sum-tree target lvars (atom 0) new-lvars))]
-     {:constraints constraints
-      :new-lvars   @new-lvars}))
-  ([target lvars next-lvar-num new-lvars]
-   (info "Considering" (count lvars) "lvars" lvars "summing to" target)
-   (case (count lvars)
-     0 []
-     1 [`(l/== ~target ~(first lvars))]
-     2 [`(lfd/+ ~(first lvars) ~(second lvars) ~target)]
-     ; Introduce new logic variables for the left and right halves. We're not
-     ; even going to try worrying about anaphoric hygiene here. Also I am
-     ; *lazy* and am not thinking about doing this purely functional.
-     (let [left  (symbol (str "s" (swap! next-lvar-num inc)))
-           right (symbol (str "s" (swap! next-lvar-num inc)))
-           [left-lvars right-lvars] (split-vec lvars)]
-       (swap! new-lvars conj left right)
-       (cons `(lfd/+ ~left ~right ~target)
-             (concat (sum-tree left left-lvars next-lvar-num new-lvars)
-                     (sum-tree right right-lvars next-lvar-num new-lvars)))))))
+        true
+        (let [[a & amounts'] amounts
+              [t & transfers'] transfers]
+          (lazy-seq
+            (if (= (bigint a) (:amount t))
+              ; Match!
+              (cons (assoc t :applied? true)
+                    (applied-transfers amounts' transfers'))
+              ; No dice, try next transfer
+              (cons (assoc t :applied? false)
+                    (applied-transfers amounts transfers')))))))
 
 (defn explain
   "Tries to explain how you got a specific read. Takes:
@@ -101,45 +91,25 @@
                                                considering
                                                transfer-field
                                                account-id)
-        n (count possible-transfers)]
-    (when (pos? n)
-      (let [; Compile a core.logic program where each transfer contributes
-            ; either 0 or its `:amount`, trying to reach `value`. I'd love to
-            ; do this functionally but the finite-domain library has no concept
-            ; of a sum over a variable number of lvars. We bash together a
-            ; program expression.
-
-            ; Names of our logic variables
-            lvars (mapv (fn [i]
-                          (symbol (str "a" i)))
-                        (range n))
-            ; Every var can contribute either 0 or the amount of its transfer
-            domains (mapv (fn [lvar transfer]
-                            `(lfd/in ~lvar (lfd/domain 0 ~(:amount transfer))))
-                          lvars
-                          possible-transfers)
-            ; Fun story: the implementation of n-ary + causes the compiler to
-            ; blow up. We build our own by assembling lvars into a tree of
-            ; binary + operations.
-            sum (sum-tree value lvars)
-
-            program
-            `(l/run 1 [~'q]
-                    (l/fresh [~@lvars ~@(:new-lvars sum)]
-                             ; Let q be the lvars
-                             (l/== ~'q ~lvars)
-                             ~@domains
-                             ~@(:constraints sum)))
-            _ (pprint program)
-            [solution] (eval program)]
-        (when solution
-          ; Turn that solution back into a data structure explaining what
-          ; transfers we did and didn't use.
-          (let [solution (mapv (fn [transfer contribution]
-                                 (assoc transfer
-                                        :applied? (< 0 contribution)))
-                                 possible-transfers
-                                 solution)]
-            (merge additional-data
-                   {:considering considering
-                    :solution    solution})))))))
+        n (count possible-transfers)
+        ; Order the transfers such that OKs are at the start, and infos, then
+        ; failures, at the end--this should help us explore the state space
+        ; faster.
+        possible-transfers (vec
+                             (sort-by (fn likelihood [transfer]
+                                      (case (:type transfer)
+                                        :ok   0
+                                        :info 1
+                                        :fail 2))
+                                    possible-transfers))
+        ; Ask the solver for a solution
+        solution (SubsetSum/solve (biginteger value)
+                                  (mapv (comp biginteger :amount)
+                                        possible-transfers))]
+    (when solution
+      ; Turn that solution back into a data structure explaining what
+      ; transfers we did and didn't use.
+      (let [solution (vec (applied-transfers solution possible-transfers))]
+        (merge additional-data
+               {:considering considering
+                :solution    solution})))))

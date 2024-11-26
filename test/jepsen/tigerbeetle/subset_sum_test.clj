@@ -49,7 +49,7 @@
 
 (def int-max (biginteger (dec (.pow (biginteger 2) 128))))
 
-(deftest ^:focus bigint-roundtrip-test
+(deftest bigint-roundtrip-test
   (testing "max"
     (is (= int-max
            (SubsetSum/bigInteger -1 -1))))
