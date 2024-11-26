@@ -12,6 +12,8 @@
                  [org.clojure/core.logic "1.1.0"]
                  [org.clojure/data.generators "1.1.0"]
                  [tesser.math "1.0.6"]]
+  :java-source-paths ["src"]
+  :javac-options ["--release" "11"]
   :repl-options {:init-ns jepsen.tigerbeetle.repl}
   :main jepsen.tigerbeetle.cli
   :jvm-opts ["-server"
@@ -21,4 +23,8 @@
              ]
   :test-selectors {:default (fn [m] true)
                    :all     (fn [m] true)
-                   :focus   :focus})
+                   :focus   :focus}
+  :profiles {:dev {:dependencies
+                   [[com.gfredericks/test.chuck "0.2.14"]
+                    [org.clojure/test.check "1.1.1"]]}})
+

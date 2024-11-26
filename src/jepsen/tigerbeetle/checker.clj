@@ -363,7 +363,6 @@
             ; We have an explanation
             {:explanation explanation}))))))
 
-
 (defn stats
   "Folds over the history, gathering basic statistics. We return:
 

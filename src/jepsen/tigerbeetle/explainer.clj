@@ -1,7 +1,12 @@
 (ns jepsen.tigerbeetle.explainer
   "The model checker said something was illegal. Great, but *why*? This
   namespace helps you figure out what writes *could* have led to a specific
-  read."
+  read.
+
+  Fun story: this is the subset sum problem, and feels well-suited to
+  constraint programming, but most solvers use small integer domains--either
+  32-bit or ~50-bit ints, and we need 128-bit ints. Clojure's core.logic can do
+  bigints, but blows up the compiler when given a few hundred lvars."
   (:require [clojure [pprint :refer [pprint]]]
             [clojure.core.logic :as l]
             [clojure.core.logic.fd :as lfd]
@@ -30,6 +35,44 @@
                               (into [])))))))
        (t/into [])
        (h/tesser history)))
+
+(defn split-vec
+  "Splits a vector into left and right halves, approximately at the midpoint."
+  [v]
+  (let [n (count v)]
+    (case n
+      0 [[] []]
+      1 [v []]
+      (let [half (long (/ n 2))]
+        [(subvec v 0 half) (subvec v half n)]))))
+
+(defn sum-tree
+  "Takes a target value (either an lvar or a literal) and a vector of lvars, as
+  symbols. Returns a map of:
+
+   {:constraints    A collection of logic constraints which ensure the sum holds
+    :new-lvars      A collection of logic variables you must declare.}"
+  ([target lvars]
+   (let [new-lvars   (atom [])
+         constraints (vec (sum-tree target lvars (atom 0) new-lvars))]
+     {:constraints constraints
+      :new-lvars   @new-lvars}))
+  ([target lvars next-lvar-num new-lvars]
+   (info "Considering" (count lvars) "lvars" lvars "summing to" target)
+   (case (count lvars)
+     0 []
+     1 [`(l/== ~target ~(first lvars))]
+     2 [`(lfd/+ ~(first lvars) ~(second lvars) ~target)]
+     ; Introduce new logic variables for the left and right halves. We're not
+     ; even going to try worrying about anaphoric hygiene here. Also I am
+     ; *lazy* and am not thinking about doing this purely functional.
+     (let [left  (symbol (str "s" (swap! next-lvar-num inc)))
+           right (symbol (str "s" (swap! next-lvar-num inc)))
+           [left-lvars right-lvars] (split-vec lvars)]
+       (swap! new-lvars conj left right)
+       (cons `(lfd/+ ~left ~right ~target)
+             (concat (sum-tree left left-lvars next-lvar-num new-lvars)
+                     (sum-tree right right-lvars next-lvar-num new-lvars)))))))
 
 (defn explain
   "Tries to explain how you got a specific read. Takes:
@@ -75,17 +118,19 @@
                             `(lfd/in ~lvar (lfd/domain 0 ~(:amount transfer))))
                           lvars
                           possible-transfers)
-            ; The vars have to sum to `value`. We introduce an extra 0 here
-            ; because (+ a) throws an unbound error--I don't think they
-            ; implemented unary +.
-            sum `(lfd/eq (~'= ~value (~'+ 0N ~@lvars)))
+            ; Fun story: the implementation of n-ary + causes the compiler to
+            ; blow up. We build our own by assembling lvars into a tree of
+            ; binary + operations.
+            sum (sum-tree value lvars)
+
             program
             `(l/run 1 [~'q]
-                    (l/fresh [~@lvars]
+                    (l/fresh [~@lvars ~@(:new-lvars sum)]
                              ; Let q be the lvars
                              (l/== ~'q ~lvars)
                              ~@domains
-                             ~sum))
+                             ~@(:constraints sum)))
+            _ (pprint program)
             [solution] (eval program)]
         (when solution
           ; Turn that solution back into a data structure explaining what
