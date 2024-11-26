@@ -176,3 +176,44 @@
              (o 7 3 :ok     :lookup-transfers [nil] 501)])
         r (check h)]
     (is (:valid? r))))
+
+(deftest explainer-test
+  (let [h (h/history
+            ; We perform two writes that crash. Note that we have no explicit
+            ; timestamps here.
+            [(o 0 0 :invoke :create-accounts [a1 a2])
+             (o 1 0 :info   :create-accounts nil)
+             ; A crashed op with two transfers, only one of which is applied
+             (o 2 1 :invoke :create-transfers [(t 10N a1 a2 5N)
+                                               (t 11N a1 a2 3N)])
+             (o 3 1 :info   :create-transfers nil)
+             ; A failed transfer
+             (o 4 2 :invoke :create-transfers [(t 12N a1 a2 2N)])
+             (o 5 2 :fail   :create-transfers nil)
+             ; Transfer reads do not observe either transfer
+             (o 10 3 :invoke :lookup-transfers [10N 11N])
+             (o 11 3 :ok     :lookup-transfers [nil nil] 501)
+             ; But an *account* read sees both transfers
+             (o 12 4 :invoke :lookup-accounts [1N])
+             (o 13 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 7N)] 502)])
+        r (check h)]
+    (is (not (:valid? r)))
+    ; We have a model error
+    (is (= {:expected a1'
+            :actual (assoc a1' :debits-posted 7N)
+            :diff {:expected {:debits-posted 0N}
+                   :actual   {:debits-posted 7N}}
+            :id          1N
+            :op          (h 8)
+            :op'         (h 9)
+            :op-count    2
+            :event-count 4}
+           (:model r)))
+    ; And also an explanation: we could have gotten here by applying the
+    ; crashed and failed transfers.
+    (is (= {:history      :original
+            :considering  #{:ok :info :fail}
+            :solution     [{:id 10N, :amount 5N, :type :info, :applied? true}
+                           {:id 11N, :amount 3N, :type :info, :applied? false}
+                           {:id 12N, :amount 2N, :type :fail, :applied? true}]}
+           (:explanation r)))))

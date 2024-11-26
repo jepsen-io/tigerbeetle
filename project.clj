@@ -9,6 +9,7 @@
                  [jepsen "0.3.8-SNAPSHOT"]
                  [org.clojure/clojure "1.12.0"]
                  [org.clojure/core.match "1.1.0"]
+                 [org.clojure/core.logic "1.1.0"]
                  [org.clojure/data.generators "1.1.0"]
                  [tesser.math "1.0.6"]]
   :repl-options {:init-ns jepsen.tigerbeetle.repl}

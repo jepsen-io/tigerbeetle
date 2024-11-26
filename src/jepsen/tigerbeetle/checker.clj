@@ -58,7 +58,8 @@
   stale read could manifest as what looks like a more serious anomaly--say, a
   torn transaction violating model consistency. We may want to add more
   provable Elle dependencies to get better locality."
-  (:require [clojure [pprint :refer [pprint]]]
+  (:require [clojure [pprint :refer [pprint]]
+                     [set :as set]]
             [clojure.core [match :refer [match]]]
             [clojure.tools.logging :refer [info warn]]
             [bifurcan-clj [core :as b]
@@ -74,7 +75,8 @@
                   [util :refer [nanos->secs]]]
             [jepsen [checker :as checker]
                     [history :as h]]
-            [jepsen.tigerbeetle [model :as model]]
+            [jepsen.tigerbeetle [explainer :as e]
+                                [model :as model]]
             [tesser [core :as t]
                     [math :as tm]
                     [quantiles :as tq]])
@@ -328,6 +330,40 @@
            ; OK
            nil)))
 
+(defn explain
+  "Takes a map with:
+
+    :history          The original history
+    :resolved-history The history resolved to ok/fails
+    :model-check      A model-checker result.
+
+  If the model-checker produces a result, tries to produce an :explanation for
+  why. Returns a map with {:explanation ...}, or nil if no explanation is
+  required or possible."
+  [{:keys [history resolved-history model-check]}]
+  (when-let [{:keys [op' id diff actual] :as err} (:model model-check)]
+    ; We have a model-checker error
+    (when (= :lookup-accounts (:f op'))
+      ; Which got stuck on a lookup-accounts op
+      (when-let [k (first (set/intersection
+                                (set (keys (:actual diff)))
+                                #{:credits-posted
+                                  :debits-posted}))]
+        ; And it's an explicable field! Let's ask the explainer using either
+        ; the resolved or original history
+        (let [v (get actual k)
+              explanation
+              (or (e/explain resolved-history op' id k v #{:ok}
+                             {:history :resolved})
+                  (e/explain history op' id k v #{:ok :info}
+                             {:history :original})
+                  (e/explain history op' id k v #{:ok :info :fail}
+                             {:history :original}))]
+          (when explanation
+            ; We have an explanation
+            {:explanation explanation}))))))
+
+
 (defn stats
   "Folds over the history, gathering basic statistics. We return:
 
@@ -512,6 +548,13 @@
                             (model-check {:history h
                                           :account-id->timestamp ait
                                           :transfer-id->timestamp tit}))
+        ; If the model-checker fails, try to explain it
+        explain        (h/task history explain [rh resolved-history
+                                                mc model-check]
+                               (explain  {:history          history
+                                         :resolved-history  rh
+                                         :model-check       mc}))
+
         check-realtime (h/task history check-realtime []
                                (check-realtime {:history history}))
         check-duplicate-timestamps (h/task history duplicate-timestamps []
@@ -521,6 +564,7 @@
         ; Build error map
         errors (merge (sorted-map)
                       @model-check
+                      @explain
                       (:anomalies @check-realtime)
                       @check-duplicate-timestamps)
         ]
