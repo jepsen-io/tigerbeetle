@@ -1114,6 +1114,8 @@
 
   IModel
   (step [this invoke ok]
+    ;(info "Model applying" (:f invoke) (:value invoke) (:value ok))
+    ;(info "Model is" (pr-str this))
     (let [this' (case (:f invoke)
                   :create-accounts       (create-accounts this invoke ok)
                   :create-transfers      (create-transfers this invoke ok)

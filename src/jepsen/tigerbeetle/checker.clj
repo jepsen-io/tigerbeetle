@@ -304,6 +304,9 @@
   "Takes a history. Returns a sequence of all OK operations in the history
   sorted by :timestamp ascending."
   [history]
+  (assert (every? :timestamp (h/oks history))
+          (str "History missing an OK :timestamp "
+               (pr-str (first (remove :timestamp (h/oks history))))))
   (->> history
        h/oks
        (sort-by :timestamp)))
@@ -333,14 +336,15 @@
 (defn explain
   "Takes a map with:
 
-    :history          The original history
-    :resolved-history The history resolved to ok/fails
-    :model-check      A model-checker result.
+    :history                  The original history
+    :resolved-history         The history resolved to ok/fails
+    :transfer-id->timestamp   A map of transfer IDs to timestamps
+    :model-check              A model-checker result.
 
   If the model-checker produces a result, tries to produce an :explanation for
   why. Returns a map with {:explanation ...}, or nil if no explanation is
   required or possible."
-  [{:keys [history resolved-history model-check]}]
+  [{:keys [history resolved-history transfer-id->timestamp model-check]}]
   (when-let [{:keys [op' id diff actual] :as err} (:model model-check)]
     ; We have a model-checker error
     (when (= :lookup-accounts (:f op'))
@@ -352,12 +356,13 @@
         ; And it's an explicable field! Let's ask the explainer using either
         ; the resolved or original history
         (let [v (get actual k)
+              tit transfer-id->timestamp
               explanation
-              (or (e/explain resolved-history op' id k v #{:ok}
+              (or (e/explain resolved-history tit op' id k v #{:ok}
                              {:history :resolved})
-                  (e/explain history op' id k v #{:ok :info}
+                  (e/explain history tit op' id k v #{:ok :info}
                              {:history :original})
-                  (e/explain history op' id k v #{:ok :info :fail}
+                  (e/explain history tit op' id k v #{:ok :info :fail}
                              {:history :original}))]
           (when explanation
             ; We have an explanation
@@ -549,10 +554,12 @@
                                           :transfer-id->timestamp tit}))
         ; If the model-checker fails, try to explain it
         explain        (h/task history explain [rh resolved-history
+                                                tit transfer-id->timestamp
                                                 mc model-check]
-                               (explain  {:history          history
-                                         :resolved-history  rh
-                                         :model-check       mc}))
+                               (explain  {:history                history
+                                         :resolved-history        rh
+                                         :transfer-id->timestamp  tit
+                                         :model-check             mc}))
 
         check-realtime (h/task history check-realtime []
                                (check-realtime {:history history}))

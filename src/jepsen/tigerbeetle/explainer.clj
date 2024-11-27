@@ -7,7 +7,8 @@
   constraint programming, but most solvers use small integer domains--either
   32-bit or ~50-bit ints, and we need 128-bit ints. Clojure's core.logic can do
   bigints, but blows up the compiler when given a few hundred lvars."
-  (:require [clojure [pprint :refer [pprint]]]
+  (:require [bifurcan-clj [map :as bm]]
+            [clojure [pprint :refer [pprint]]]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [history :as h]]
             [tesser.core :as t])
@@ -16,7 +17,7 @@
 (defn possible-transfers
   "Finds all transfers which were invoked prior to the given index,
   matching the given op types, whose key k was equal to value v."
-  [history max-index types k v]
+  [history transfer-id->timestamp max-index types k v]
   (h/ensure-pair-index history)
   (->> (t/mapcat (fn [op]
                    (when (and (identical? :create-transfers (:f op))
@@ -28,9 +29,13 @@
                               (filter (fn [transfer]
                                         (= v (get transfer k))))
                               (map (fn restrict [t]
-                                     {:id     (:id t)
-                                      :amount (:amount t)
-                                      :type   (:type op')}))
+                                     {:id         (:id t)
+                                      :amount     (:amount t)
+                                      :type       (:type op')
+                                      :op-index   (:index op)
+                                      :timestamp  (bm/get
+                                                    transfer-id->timestamp
+                                                    (:id t))}))
                               (into [])))))))
        (t/into [])
        (h/tesser history)))
@@ -68,6 +73,7 @@
   "Tries to explain how you got a specific read. Takes:
 
     - A history
+    - A transfer-id->timestamp map
     - An OK read operation
     - An account ID in that read that you'd like to explain
     - The field in that account--either :credits-posted or :debits-posted--which
@@ -81,12 +87,13 @@
 
     :considering    The set of operation types (e.g. :ok, :info) we considered
     :solution       A vector of transfer IDs executed"
-  [history read-op' account-id field value considering additional-data]
+  [history transfer-id->timestamp read-op' account-id field value considering additional-data]
   (assert (#{:credits-posted :debits-posted} field))
   (let [transfer-field (case field
                          :credits-posted :credit-account-id
                          :debits-posted  :debit-account-id)
         possible-transfers (possible-transfers history
+                                               transfer-id->timestamp
                                                (:index read-op')
                                                considering
                                                transfer-field
@@ -97,10 +104,11 @@
         ; faster.
         possible-transfers (vec
                              (sort-by (fn likelihood [transfer]
-                                      (case (:type transfer)
-                                        :ok   0
-                                        :info 1
-                                        :fail 2))
+                                        [(case (:type transfer)
+                                          :ok   0
+                                          :info 1
+                                          :fail 2)
+                                         (:timestamp transfer)])
                                     possible-transfers))
         ; Ask the solver for a solution
         solution (SubsetSum/solve (biginteger value)

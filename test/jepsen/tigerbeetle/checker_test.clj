@@ -190,30 +190,34 @@
              ; A failed transfer
              (o 4 2 :invoke :create-transfers [(t 12N a1 a2 2N)])
              (o 5 2 :fail   :create-transfers nil)
-             ; Transfer reads do not observe either transfer
-             (o 10 3 :invoke :lookup-transfers [10N 11N])
-             (o 11 3 :ok     :lookup-transfers [nil nil] 501)
-             ; But an *account* read sees both transfers
+             ; An OK transfer
+             (o 6 3 :invoke :create-transfers [(t 13N a1 a2 10N)])
+             (o 7 3 :ok     :create-transfers [:ok] 213)
+             ; Transfer reads see just t13
+             (o 10 3 :invoke :lookup-transfers [10N 11N 12N 13N])
+             (o 11 3 :ok     :lookup-transfers [nil nil nil (tts (t 13N a1 a2 10N))] 501)
+             ; But an *account* read sees 10, 12, and 13
              (o 12 4 :invoke :lookup-accounts [1N])
-             (o 13 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 7N)] 502)])
+             (o 13 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 17N)] 502)])
         r (check h)]
     (is (not (:valid? r)))
     ; We have a model error
-    (is (= {:expected a1'
-            :actual (assoc a1' :debits-posted 7N)
-            :diff {:expected {:debits-posted 0N}
-                   :actual   {:debits-posted 7N}}
+    (is (= {:expected (assoc a1' :debits-posted 10N)
+            :actual (assoc a1' :debits-posted 17N)
+            :diff {:expected {:debits-posted 10N}
+                   :actual   {:debits-posted 17N}}
             :id          1N
-            :op          (h 8)
-            :op'         (h 9)
-            :op-count    2
-            :event-count 4}
+            :op          (h 10)
+            :op'         (h 11)
+            :op-count    3
+            :event-count 7}
            (:model r)))
     ; And also an explanation: we could have gotten here by applying the
     ; crashed and failed transfers.
     (is (= {:history      :original
             :considering  #{:ok :info :fail}
-            :solution     [{:id 10N, :amount 5N, :type :info, :applied? true}
-                           {:id 11N, :amount 3N, :type :info, :applied? false}
-                           {:id 12N, :amount 2N, :type :fail, :applied? true}]}
+            :solution     [{:id 13N, :op-index 6, :amount 10N, :type :ok, :applied? true, :timestamp 213}
+                           {:id 10N, :op-index 2, :amount 5N, :type :info, :applied? true, :timestamp nil}
+                           {:id 11N, :op-index 2, :amount 3N, :type :info, :applied? false, :timestamp nil}
+                           {:id 12N, :op-index 4, :amount 2N, :type :fail, :applied? true, :timestamp nil}]}
            (:explanation r)))))
