@@ -358,10 +358,10 @@
         (let [v (get actual k)
               tit transfer-id->timestamp
               explanation
-              (or (e/explain resolved-history tit op' id k v #{:ok}
-                             {:history :resolved})
-                  (e/explain history tit op' id k v #{:ok :info}
-                             {:history :original})
+              (or ;(e/explain resolved-history tit op' id k v #{:ok}
+                  ;           {:history :resolved})
+                  ;(e/explain history tit op' id k v #{:ok :info}
+                  ;           {:history :original})
                   (e/explain history tit op' id k v #{:ok :info :fail}
                              {:history :original}))]
           (when explanation
