@@ -95,40 +95,51 @@
                    (cons (assoc t :applied? false)
                          (applied-transfers amounts transfers' false))))))))
 
-  (defn explain
-  "Tries to explain how you got a specific read. Takes:
+(defn explain
+  "Tries to explain how you got a specific read. Takes a map of:
 
-    - A history
-    - A transfer-id->timestamp map
-    - An OK read operation
-    - An account ID in that read that you'd like to explain
-    - The field in that account--either :credits-posted or :debits-posted--which
-      was bad.
-    - The value for that field we want to reach
-    - The set of op types (e.g. #{:ok, :info} we're considering
-    - Additional data to merge into the solution, if one is found.
+  {:history                 The history we're going to use
+   :transfer-id->timestamp  The map of transfer IDs to timestamps
+   :op'                     An OK account read operation which you want to
+                            reach
+   :account-id              An account ID in that read that you want to validate
+   :field                   The field, either :credits-posted or
+                            :debits-posted, that you want to explain
+   :value                   The value of that field you want to reach
+   :op-types                The set of operation types we're considering
+   :additional-data         Additional data to merge into the solution map, if
+                            found
+   :last-valid-read         The map constructed by
+                            checker/model-check-last-valid-read
 
   Attempts to find a set of transfers that produce that specific read,
   returning a map of the form:
 
     :considering    The set of operation types (e.g. :ok, :info) we considered
     :solution       A vector of transfer IDs executed"
-  [history transfer-id->timestamp read-op' account-id field value considering additional-data]
+  [{:keys [history
+           transfer-id->timestamp
+           op'
+           account-id
+           field
+           value
+           op-types
+           additional-data
+           last-valid-read]}]
   (assert (#{:credits-posted :debits-posted} field))
   (let [transfer-field (case field
                          :credits-posted :credit-account-id
                          :debits-posted  :debit-account-id)
         possible-transfers (possible-transfers history
                                                transfer-id->timestamp
-                                               (:index read-op')
-                                               considering
+                                               (:index op')
+                                               op-types
                                                transfer-field
                                                account-id)
-        ; Temporary: filter to just those which were :ok or we didn't know the
-        ; result. KYLE NEXT WEEK START HERE: it looks like this is unsolvable
-        ; if we do this?
-        possible-transfers (vec (filter (comp #{nil :ok} :result)
-                                        possible-transfers))
+        ; Exploratory: filter to just those which were :ok or we didn't know the
+        ; result.
+        ;possible-transfers (vec (filter (comp #{nil :ok} :result)
+        ;                                possible-transfers))
 
         n (count possible-transfers)
         ; Order the transfers such that OKs are at the start, and infos, then
@@ -136,11 +147,9 @@
         ; faster.
         possible-transfers (vec
                              (sort-by (fn likelihood [transfer]
-                                        [; First, place those which we know
+                                        [; Place those which we know
                                          ; were :ok up front
-                                         (:timestamp transfer)
-
-                                         #_(case (:result transfer)
+                                         (case (:result transfer)
                                            :ok 0
                                            1)
                                          ; Then, choose those whose ops
@@ -161,5 +170,5 @@
       ; transfers we did and didn't use.
       (let [solution (vec (applied-transfers solution possible-transfers))]
         (merge additional-data
-               {:considering considering
+               {:op-types    op-types
                 :solution    solution})))))

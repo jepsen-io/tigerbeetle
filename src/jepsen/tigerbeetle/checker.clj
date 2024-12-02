@@ -325,10 +325,12 @@
   Runs the model forward on OK operations until it crashes, and returns a map
   from the most recent valid read of that ID:
 
-    {:op      The invocation of the read
-     :op'     The completion of the read
-     :account The state of the account at that time
-     :model   The entire model state just before the read.}
+    {:op               The invocation of the read
+     :op'              The completion of the read
+     :account          The state of the account at that time
+     :model            The entire model state just before the read.
+     :applied-indices  A Bifurcan set of the indices of invoke ops we applied,
+                       up to but not including this op.}
   "
   [{:keys [history oks type id] :as opts}]
   (assert id)
@@ -344,12 +346,12 @@
         ; the wrong type.
         ; TODO: maybe we WANT nil reads? Like before an account exists?
         read-of-id (fn read-of-id [op']
-                     (when (read-of-type op')
+                     (when (read-of-type? op')
                        (first (filter (fn find-id [event]
                                         (= id (:id event)))
                                       (:value op')))))]
-    (loopr [model (model/init {:select-keys opts [:account-id->timestamp
-                                                  :transfer-id->timestamp]})
+    (loopr [model (model/init (select-keys opts [:account-id->timestamp
+                                                 :transfer-id->timestamp]))
             good  {:model model}]
            [op' oks]
            (let [op     (h/invocation history op')
@@ -358,7 +360,7 @@
                ; Abort!
                good
                ; This was valid. Is it of interest?
-               (if-let [read (read-of-id op)]
+               (if-let [read (read-of-id op')]
                  (recur model'
                         {:op op
                          :op' op'
@@ -368,14 +370,53 @@
            ; Never invalid
            good)))
 
+(defn explain
+  "Explains how a model checker error might have occurred.
+
+  Takes a map of options for model-check, and an error map from model-check.
+  For some kinds of error map, tries to produce an :explanation for why.
+  Returns an explanation structure, or nil if no explanation is required or
+  possible."
+  [{:keys [history resolved-history transfer-id->timestamp model-check]
+    :as opts}
+   {:keys [op' id diff actual last-valid-read] :as err}]
+  (when err
+    ; We have a model-checker error
+    (when (= :lookup-accounts (:f op'))
+      ; Which got stuck on a lookup-accounts op
+      (when-let [field (first (set/intersection
+                                (set (keys (:actual diff)))
+                                #{:credits-posted
+                                  :debits-posted}))]
+        ; And it's an explicable field! Let's ask the explainer using either
+        ; the resolved or original history
+        (let [value (get actual field)
+              opts  (assoc opts
+                           :op'             op'
+                           :account-id      id
+                           :field           field
+                           :value           value
+                           :last-valid-read last-valid-read)]
+          (or (e/explain (assoc opts
+                                :history resolved-history
+                                :op-types #{:ok :info}
+                                :additional-data {:history :resolved}))
+              (e/explain (assoc opts
+                                :op-types #{:ok :info}
+                                :additional-data {:history :original}))
+              (e/explain (assoc opts
+                                :op-types #{:ok :info :fail}
+                                :additional-data {:history :original}))))))))
+
 (defn model-check
   "Checks a sequence of OK operations from a history using our model checker.
   Returns an error map, or nil if no errors were found."
   [{:keys [history
+           resolved-history
            account-id->timestamp
            transfer-id->timestamp]
     :as opts}]
-  (let [oks (timestamp-sorted history)
+  (let [oks (timestamp-sorted resolved-history)
         n   (count oks)]
     (loopr [model (model/init
                     (select-keys opts [:account-id->timestamp
@@ -385,59 +426,35 @@
                  model  (model/step model op op')]
              (if (model/inconsistent? model)
                (let [err (into (sorted-map) model)
-                     ; If we had a bad read of a specific ID, try and trace it.
+                     ; If we had a bad read of a specific ID, try and trace it
+                     ; to the last valid read.
                      id  (:id err)
                      type (case (:f op)
-                            :lookup-transfers :transfer
+                            :lookup-transfers      :transfer
                             :get-account-transfers :transfer
-                            :lookup-accounts :account)
-                     err (when (and id type)
-                           (assoc err
-                                  :last-valid-read
-                                  (model-check-last-valid-read
-                                    (assoc opts
-                                           :oks oks
-                                           :type type
-                                           :id id))))]
+                            :lookup-accounts       :account
+                            :create-accounts       nil
+                            :create-transfers      nil)
+                     last-valid-read
+                     (when (and id type)
+                       (model-check-last-valid-read
+                         (assoc opts :oks oks, :type type, :id id)))
+                     err (cond-> err
+                           (:op last-valid-read)
+                           (assoc :last-valid-read
+                                  (dissoc last-valid-read :model)))
+
+
+                     ; Try to explain the error.
+                     explanation (explain opts err)
+                     err (cond-> err
+                           explanation
+                           (assoc :explanation explanation))]
+
                  {(:type err) (dissoc err :type)})
                (recur model)))
            ; OK
            nil)))
-
-(defn explain
-  "Takes a map with:
-
-    :history                  The original history
-    :resolved-history         The history resolved to ok/fails
-    :transfer-id->timestamp   A map of transfer IDs to timestamps
-    :model-check              A model-checker result.
-
-  If the model-checker produces a result, tries to produce an :explanation for
-  why. Returns a map with {:explanation ...}, or nil if no explanation is
-  required or possible."
-  [{:keys [history resolved-history transfer-id->timestamp model-check]}]
-  (when-let [{:keys [op' id diff actual] :as err} (:model model-check)]
-    ; We have a model-checker error
-    (when (= :lookup-accounts (:f op'))
-      ; Which got stuck on a lookup-accounts op
-      (when-let [k (first (set/intersection
-                                (set (keys (:actual diff)))
-                                #{:credits-posted
-                                  :debits-posted}))]
-        ; And it's an explicable field! Let's ask the explainer using either
-        ; the resolved or original history
-        (let [v (get actual k)
-              tit transfer-id->timestamp
-              explanation
-              (or ;(e/explain resolved-history tit op' id k v #{:ok}
-                  ;           {:history :resolved})
-                  ;(e/explain history tit op' id k v #{:ok :info}
-                  ;           {:history :original})
-                  (e/explain history tit op' id k v #{:ok :info :fail}
-                             {:history :original}))]
-          (when explanation
-            ; We have an explanation
-            {:explanation explanation}))))))
 
 (defn stats
   "Folds over the history, gathering basic statistics. We return:
@@ -617,21 +634,13 @@
                                  (resolve-ops {:history history
                                                :account-id->timestamp ait
                                                :transfer-id->timestamp tit}))
-        model-check (h/task history model-check [h   resolved-history
+        model-check (h/task history model-check [rh  resolved-history
                                                  ait account-id->timestamp
                                                  tit transfer-id->timestamp]
-                            (model-check {:history h
+                            (model-check {:history history
+                                          :resolved-history rh
                                           :account-id->timestamp ait
                                           :transfer-id->timestamp tit}))
-        ; If the model-checker fails, try to explain it
-        explain        (h/task history explain [rh resolved-history
-                                                tit transfer-id->timestamp
-                                                mc model-check]
-                               (explain  {:history                history
-                                         :resolved-history        rh
-                                         :transfer-id->timestamp  tit
-                                         :model-check             mc}))
-
         check-realtime (h/task history check-realtime []
                                (check-realtime {:history history}))
         check-duplicate-timestamps (h/task history duplicate-timestamps []
@@ -641,7 +650,6 @@
         ; Build error map
         errors (merge (sorted-map)
                       @model-check
-                      @explain
                       (:anomalies @check-realtime)
                       @check-duplicate-timestamps)
         ]

@@ -210,14 +210,14 @@
             :op          (h 10)
             :op'         (h 11)
             :op-count    3
-            :event-count 7}
-           (:model r)))
-    ; And also an explanation: we could have gotten here by applying the
-    ; crashed and failed transfers.
-    (is (= {:history      :original
-            :considering  #{:ok :info :fail}
-            :solution     [{:id 13N, :op-index 6, :amount 10N, :type :ok, :applied? true, :timestamp 213}
-                           {:id 10N, :op-index 2, :amount 5N, :type :info, :applied? true, :timestamp nil}
-                           {:id 11N, :op-index 2, :amount 3N, :type :info, :applied? false, :timestamp nil}
-                           {:id 12N, :op-index 4, :amount 2N, :type :fail, :applied? true, :timestamp nil}]}
-           (:explanation r)))))
+            :event-count 7
+            ; An explanation: we could have gotten here by applying the crashed and
+            ; failed transfers.
+            :explanation
+            {:history      :original
+             :op-types     #{:ok :info :fail}
+             :solution     [{:id 13N, :op-index 6, :amount 10N, :type :ok, :result :ok, :applied? true, :timestamp 213}
+                            {:id 10N, :op-index 2, :amount 5N, :type :info, :result nil, :applied? true, :timestamp nil}
+                            {:id 11N, :op-index 2, :amount 3N, :type :info, :result nil, :applied? false, :timestamp nil}
+                            {:id 12N, :op-index 4, :amount 2N, :type :fail, :result nil, :applied? true, :timestamp nil}]}}
+           (:model r)))))
