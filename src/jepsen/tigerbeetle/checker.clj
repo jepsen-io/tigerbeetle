@@ -311,6 +311,63 @@
        h/oks
        (sort-by :timestamp)))
 
+(defn model-check-last-valid-read
+  "When we find an error, it's nice to backtrack to the last known-valid
+  operation. Takes a map of:
+
+    {:history                A history
+     :oks                    Timestamp-sorted OK operations to apply
+     :account-id->timestamp  The timestamp map for accounts
+     :transfer-id->timestamp The timestamp map for transfers
+     :type                   Either :account or :transfer
+     :id                     The ID we want to find.}
+
+  Runs the model forward on OK operations until it crashes, and returns a map
+  from the most recent valid read of that ID:
+
+    {:op      The invocation of the read
+     :op'     The completion of the read
+     :account The state of the account at that time
+     :model   The entire model state just before the read.}
+  "
+  [{:keys [history oks type id] :as opts}]
+  (assert id)
+  (let [; A predicate of an op that tells us if it was a read of our desired
+        ; type
+        read-of-type?
+        (h/has-f?
+          (case type
+            :account  #{:lookup-accounts}
+            :transfer #{:lookup-transfers :get-account-transfers}))
+        ; Takes a completion op and returns a read in it of a specific
+        ; account/transfer matching our ID, or nil if none is there, or it's of
+        ; the wrong type.
+        ; TODO: maybe we WANT nil reads? Like before an account exists?
+        read-of-id (fn read-of-id [op']
+                     (when (read-of-type op')
+                       (first (filter (fn find-id [event]
+                                        (= id (:id event)))
+                                      (:value op')))))]
+    (loopr [model (model/init {:select-keys opts [:account-id->timestamp
+                                                  :transfer-id->timestamp]})
+            good  {:model model}]
+           [op' oks]
+           (let [op     (h/invocation history op')
+                 model' (model/step model op op')]
+             (if (model/inconsistent? model')
+               ; Abort!
+               good
+               ; This was valid. Is it of interest?
+               (if-let [read (read-of-id op)]
+                 (recur model'
+                        {:op op
+                         :op' op'
+                         type read
+                         :model model})
+                 (recur model' good))))
+           ; Never invalid
+           good)))
+
 (defn model-check
   "Checks a sequence of OK operations from a history using our model checker.
   Returns an error map, or nil if no errors were found."
@@ -327,7 +384,21 @@
            (let [op     (h/invocation history op')
                  model  (model/step model op op')]
              (if (model/inconsistent? model)
-               (let [err (into (sorted-map) model)]
+               (let [err (into (sorted-map) model)
+                     ; If we had a bad read of a specific ID, try and trace it.
+                     id  (:id err)
+                     type (case (:f op)
+                            :lookup-transfers :transfer
+                            :get-account-transfers :transfer
+                            :lookup-accounts :account)
+                     err (when (and id type)
+                           (assoc err
+                                  :last-valid-read
+                                  (model-check-last-valid-read
+                                    (assoc opts
+                                           :oks oks
+                                           :type type
+                                           :id id))))]
                  {(:type err) (dissoc err :type)})
                (recur model)))
            ; OK
