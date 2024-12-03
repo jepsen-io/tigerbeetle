@@ -261,18 +261,20 @@
 
 (defn resolve-ops-infer-timestamp
   "Takes a history, a map of account IDs to timestamps, one for transfer IDs to
-  timestamps, and an :info operation. Returns nil if the first write appears in
+  timestamps, and an :info operation. Returns nil if any write event appears in
   those maps. If one does appear, returns the timestamp of the first observed
-  effect. Empty writes and all reads return nil."
+  event. Empty writes and all reads return nil."
   [history account-id->timestamp transfer-id->timestamp op]
   (when-let [; What map are we going to look in?
              id->ts (case (:f op)
                       :create-accounts account-id->timestamp
                       :create-transfers transfer-id->timestamp
                       nil)]
-    (let [invoke (h/invocation history op)]
-      (when-let [event (first (:value invoke))]
-        (bm/get id->ts (:id event))))))
+    (->> (h/invocation history op)
+         :value
+         (keep (fn get-ts [event]
+                 (bm/get id->ts (:id event))))
+         first)))
 
 (defn resolve-ops
   "Takes a map of:
@@ -282,8 +284,9 @@
     :transfer-id->timestamp   A map of observed transfer IDs to timestamps
 
   Returns a new history, like the given history, but where any info operations
-  are resolved to either :ok or :fail based on presence in the id->timestamp
-  maps. Associates actually-ok ops with a :timestamp and :value :unknown."
+  are resolved to either :ok or :fail based on their events being present in
+  the id->timestamp maps. Associates actually-ok ops with a :timestamp and
+  :value :unknown."
   [{:keys [history account-id->timestamp transfer-id->timestamp]}]
   (h/map (fn resolve [op]
            (if (and (h/client-op? op)

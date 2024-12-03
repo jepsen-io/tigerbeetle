@@ -177,6 +177,30 @@
         r (check h)]
     (is (:valid? r))))
 
+(deftest indefinite-first-event-failed-test
+  ; If the first event in an info op fails, we should still be able to infer
+  ; its success from a later event.
+  (let [h (h/history
+            ; We perform two writes that crash. Note that we have no explicit
+            ; timestamps here.
+            [(o 0 0 :invoke :create-accounts [a1 a2])
+             (o 1 0 :info   :create-accounts nil)
+             ; First transfer fails, but later transfer succeeds
+             (o 2 1 :invoke :create-transfers [(t 10N a3 a2 5N)
+                                               (t 11N a1 a2 3N)])
+             (o 3 1 :info   :create-transfers nil)
+             ; Read observes the second transfer
+             (o 4 2 :invoke :lookup-accounts [1N 2N])
+             (o 5 2 :ok     :lookup-accounts [(assoc a1' :debits-posted 3N)
+                                              (assoc a2' :credits-posted 3N)]
+                500)
+             (o 6 3 :invoke :lookup-transfers [10N 11N])
+             (o 7 3 :ok     :lookup-transfers [nil (tts (t 11N a1 a2 3N))]
+                                               501)])
+        r (check h)]
+    (is (:valid? r))))
+
+
 (deftest explainer-test
   (let [h (h/history
             ; We perform two writes that crash. Note that we have no explicit
