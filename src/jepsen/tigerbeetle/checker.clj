@@ -350,36 +350,48 @@
                        (first (filter (fn find-id [event]
                                         (= id (:id event)))
                                       (:value op')))))]
-    (loopr [model (model/init (select-keys opts [:account-id->timestamp
-                                                 :transfer-id->timestamp]))
-            good  {:model model}]
+    (loopr [model           (model/init (select-keys opts
+                                                     [:account-id->timestamp
+                                                      :transfer-id->timestamp]))
+            ; Indices applied since last good state
+            applied-indices (b/linear bs/empty)
+            ; Last good state
+            good            {:model           model
+                             :applied-indices (b/linear bs/empty)}]
            [op' oks]
-           (let [op     (h/invocation history op')
-                 model' (model/step model op op')]
+           (let [op               (h/invocation history op')
+                 model'           (model/step model op op')
+                 applied-indices' (bs/add applied-indices (:index op))]
              (if (model/inconsistent? model')
                ; Abort!
                good
                ; This was valid. Is it of interest?
                (if-let [read (read-of-id op')]
                  (recur model'
+                        (b/linear bs/empty)
                         {:op op
                          :op' op'
                          type read
-                         :model model})
-                 (recur model' good))))
+                         :model model
+                         :applied-indices (bs/union
+                                            (:applied-indices good)
+                                            applied-indices')})
+                 (recur model' applied-indices' good))))
            ; Never invalid
-           good)))
+           (assoc good
+                  :applied-indices applied-indices))))
 
 (defn explain
   "Explains how a model checker error might have occurred.
 
-  Takes a map of options for model-check, and an error map from model-check.
-  For some kinds of error map, tries to produce an :explanation for why.
-  Returns an explanation structure, or nil if no explanation is required or
-  possible."
+  Takes a map of options for model-check, an error map from model-check, and a
+  last valid read map. For some kinds of error map, tries to produce an
+  :explanation for why. Returns an explanation structure, or nil if no
+  explanation is required or possible."
   [{:keys [history resolved-history transfer-id->timestamp model-check]
     :as opts}
-   {:keys [op' id diff actual last-valid-read] :as err}]
+   {:keys [op' id diff actual] :as err}
+   last-valid-read]
   (when err
     ; We have a model-checker error
     (when (= :lookup-accounts (:f op'))
@@ -397,11 +409,11 @@
                            :field           field
                            :value           value
                            :last-valid-read last-valid-read)]
-          (or (e/explain (assoc opts
+          (or #_(e/explain (assoc opts
                                 :history resolved-history
                                 :op-types #{:ok :info}
                                 :additional-data {:history :resolved}))
-              (e/explain (assoc opts
+              #_(e/explain (assoc opts
                                 :op-types #{:ok :info}
                                 :additional-data {:history :original}))
               (e/explain (assoc opts
@@ -439,18 +451,20 @@
                      (when (and id type)
                        (model-check-last-valid-read
                          (assoc opts :oks oks, :type type, :id id)))
-                     err (cond-> err
-                           (:op last-valid-read)
-                           (assoc :last-valid-read
-                                  (dissoc last-valid-read :model)))
-
 
                      ; Try to explain the error.
-                     explanation (explain opts err)
+                     explanation (explain opts err last-valid-read)
                      err (cond-> err
                            explanation
-                           (assoc :explanation explanation))]
+                           (assoc :explanation explanation)
 
+                           (:op last-valid-read)
+                           (assoc :last-valid-read
+                                  ; These are helpful for processing but also
+                                  ; enormous
+                                  (dissoc last-valid-read
+                                          :applied-indices
+                                          :model)))]
                  {(:type err) (dissoc err :type)})
                (recur model)))
            ; OK

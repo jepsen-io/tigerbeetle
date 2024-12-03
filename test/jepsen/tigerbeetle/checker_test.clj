@@ -221,3 +221,44 @@
                             {:id 11N, :op-index 2, :amount 3N, :type :info, :result nil, :applied? false, :timestamp nil}
                             {:id 12N, :op-index 4, :amount 2N, :type :fail, :result nil, :applied? true, :timestamp nil}]}}
            (:model r)))))
+
+(deftest explainer-last-valid-read-test
+  (let [h (h/history
+            ; We create accounts and do a transfer
+            [(o 0 0 :invoke :create-accounts [a1 a2])
+             (o 1 0 :ok     :create-accounts [:ok :ok] 102)
+             (o 2 1 :invoke :create-transfers [(t 10N a1 a2 5N)])
+             (o 3 1 :ok     :create-transfers [:ok] 210)
+             ; That transfer is visible to a balance read.
+             (o 4 2 :invoke :lookup-accounts [1N])
+             (o 5 2 :ok     :lookup-accounts [(assoc a1' :debits-posted 5N)] 211)
+             ; Now we do a failed transfer
+             (o 6 2 :invoke :create-transfers [(t 11N a1 a2 2N)])
+             (o 7 2 :fail   :create-transfers nil)
+             ; And an account read illegally reflects it!
+             (o 8 4 :invoke :lookup-accounts [1N])
+             (o 9 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 7N)] 213)])
+        r (check h)]
+    (is (not (:valid? r)))
+    ; We have a model error
+    (is (= {:expected (assoc a1' :debits-posted 5N)
+            :actual   (assoc a1' :debits-posted 7N)
+            :diff     {:expected {:debits-posted 5N}
+                       :actual   {:debits-posted 7N}}
+            :id          1N
+            :op          (h 8)
+            :op'         (h 9)
+            :op-count    3
+            :event-count 4
+            ; Our last valid read of ID 1 was...
+            :last-valid-read {:op (h 4)
+                              :op' (h 5)
+                              :account (assoc a1' :debits-posted 5N)}
+            ; An explanation: we could have gotten here by applying the crashed and
+            ; failed transfers.
+            :explanation
+            {:history      :original
+             :op-types     #{:ok :info :fail}
+             ; HERE: we need to update the explainer to start from the last valid read.
+             :solution     [{:id 11N, :op-index 6, :amount 2N, :type :fail, :result nil, :applied? true, :timestamp nil}]}}
+           (:model r)))))

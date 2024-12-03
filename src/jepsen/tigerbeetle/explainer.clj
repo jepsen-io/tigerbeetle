@@ -7,7 +7,8 @@
   constraint programming, but most solvers use small integer domains--either
   32-bit or ~50-bit ints, and we need 128-bit ints. Clojure's core.logic can do
   bigints, but blows up the compiler when given a few hundred lvars."
-  (:require [bifurcan-clj [map :as bm]]
+  (:require [bifurcan-clj [map :as bm]
+                          [set :as bs]]
             [clojure [datafy :refer [datafy]]
                      [pprint :refer [pprint]]]
             [clojure.tools.logging :refer [info warn]]
@@ -16,44 +17,58 @@
   (:import (jepsen.tigerbeetle SubsetSum)))
 
 (defn possible-transfers
-  "Finds all transfers which were invoked prior to the given index,
-  matching the given op types, whose key k was equal to value v."
-  [history transfer-id->timestamp max-index types k v]
+  "Finds all transfers in the given gistory which were invoked prior to the
+  given index, which have not already been applied to obtain the last valid
+  read, matching the given op types, whose `transfer-field` was equal to
+  `account-id`."
+  [{:keys [history
+           transfer-id->timestamp
+           op'
+           transfer-field
+           account-id
+           op-types
+           last-valid-read]}]
   (h/ensure-pair-index history)
-  (->> (t/mapcat (fn [op]
-                   (when (and (identical? :create-transfers (:f op))
-                              (h/invoke? op)
-                              (< (:index op) max-index))
-                     (let [op' (h/completion history op)]
-                       (when (contains? types (:type op'))
-                         (->> (:value op)
-                              ; Augment transfers to have an index
-                              (map-indexed (fn index [i transfer]
-                                             (assoc transfer :i i)))
-                              ; Find just those of interest
-                              (filter (fn restrict [transfer]
-                                        (= v (get transfer k))))
-                              (map (fn augment [t]
-                                     ; One thing to keep in mind here: it's
-                                     ; normal for OK operations to contain
-                                     ; transfers that did not actually succeed.
-                                     ; We... actually *want* to have those as
-                                     ; candidates in case the state machine is
-                                     ; doing something unexpected, but it gets
-                                     ; weird! We assign timestamps based either
-                                     ; on transfer or op timestamp, if known.
-                                     {:id           (:id t)
-                                      :amount       (:amount t)
-                                      :op-index     (:index op)
-                                      :type         (:type op')
-                                      :result       (nth (:value op') (:i t))
-                                      :timestamp    (bm/get
-                                                      transfer-id->timestamp
-                                                      (:id t)
-                                                      (:timestamp op'))}))
-                              (into [])))))))
-       (t/into [])
-       (h/tesser history)))
+  (let [applied-indices (:applied-indices last-valid-read bs/empty)
+        max-index       (:index op')]
+    (->> (t/mapcat (fn [op]
+                     (when (and (identical? :create-transfers (:f op))
+                                (h/invoke? op)
+                                (< (:index op) max-index)
+                                (not (bs/contains? applied-indices
+                                                   (:index op))))
+                       (let [op' (h/completion history op)]
+                         (when (contains? op-types (:type op'))
+                           (->> (:value op)
+                                ; Augment transfers to have an index
+                                (map-indexed (fn index [i transfer]
+                                               (assoc transfer :i i)))
+                                ; Find just those of interest
+                                (filter (fn restrict [transfer]
+                                          (= account-id
+                                             (get transfer transfer-field))))
+                                (map (fn augment [t]
+                                       ; One thing to keep in mind here: it's
+                                       ; normal for OK operations to contain
+                                       ; transfers that did not actually
+                                       ; succeed. We... actually *want* to have
+                                       ; those as candidates in case the state
+                                       ; machine is doing something unexpected,
+                                       ; but it gets weird! We assign
+                                       ; timestamps based either on transfer or
+                                       ; op timestamp, if known.
+                                       {:id           (:id t)
+                                        :amount       (:amount t)
+                                        :op-index     (:index op)
+                                        :type         (:type op')
+                                        :result       (nth (:value op') (:i t))
+                                        :timestamp    (bm/get
+                                                        transfer-id->timestamp
+                                                        (:id t)
+                                                        (:timestamp op'))}))
+                                (into [])))))))
+         (t/into [])
+         (h/tesser history))))
 
 (defn applied-transfers
   "Takes a list of amounts (bigintegers) and a list of transfer maps (e.g. with
@@ -125,17 +140,13 @@
            value
            op-types
            additional-data
-           last-valid-read]}]
+           last-valid-read] :as opts}]
   (assert (#{:credits-posted :debits-posted} field))
   (let [transfer-field (case field
                          :credits-posted :credit-account-id
                          :debits-posted  :debit-account-id)
-        possible-transfers (possible-transfers history
-                                               transfer-id->timestamp
-                                               (:index op')
-                                               op-types
-                                               transfer-field
-                                               account-id)
+        possible-transfers (possible-transfers
+                             (assoc opts :transfer-field transfer-field))
         ; Exploratory: filter to just those which were :ok or we didn't know the
         ; result.
         ;possible-transfers (vec (filter (comp #{nil :ok} :result)
@@ -161,8 +172,16 @@
                                          ; And finally by timestamp
                                          (:timestamp transfer)])
                                     possible-transfers))
+        ; We're starting from the last valid read, so we actually want to find
+        ; transfers that sum to the difference between our invalid read and the
+        ; last valid one.
+        last-valid-value (-> last-valid-read
+                             :account
+                             (get field 0))
+
         ; Ask the solver for a solution
-        solution (SubsetSum/solve (biginteger value)
+        solution (SubsetSum/solve (biginteger
+                                    (- value last-valid-value))
                                   (mapv (comp biginteger :amount)
                                         possible-transfers))]
     (when solution
