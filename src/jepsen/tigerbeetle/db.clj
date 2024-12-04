@@ -7,7 +7,8 @@
                     [util :refer [meh]]]
             [jepsen.control [net :as cn]
                             [util :as cu]]
-            [jepsen.tigerbeetle [core :refer [cluster-id port]]]
+            [jepsen.tigerbeetle [client :as client]
+                                [core :refer [cluster-id port]]]
             [slingshot.slingshot :refer [try+ throw+]]))
 
 (def dir "The top-level directory."
@@ -127,7 +128,13 @@
         :start
         (str "--cache-grid=" cache-grid-size)
         (str "--addresses=" (addresses test))
-        data-file))))
+        data-file)))
+
+  db/Primary
+  (setup-primary! [_ _ _])
+
+  (primaries [this test]
+    (client/primary-tracker-primaries (:primary-tracker test))))
 
 (defn db
   "Constructs a new DB for the test, given CLI opts."

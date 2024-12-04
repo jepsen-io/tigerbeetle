@@ -11,7 +11,8 @@
                     [tests :as tests]
                     [util :as util]]
             [jepsen.control.scp :as scp]
-            [jepsen.tigerbeetle [db :as db]
+            [jepsen.tigerbeetle [client :as client]
+                                [db :as db]
                                 [nemesis :as nemesis]]
             [jepsen.tigerbeetle.workload [transfer :as transfer]]
             [jepsen.os.debian :as debian]))
@@ -82,15 +83,17 @@
   [opts]
   (let [workload-name (:workload opts)
         workload      ((workloads workload-name) opts)
+        primary-tracker (client/primary-tracker)
         db            (db/db opts)
         os            debian/os
         nemesis       (nemesis/package
                         {:db            db
                          :nodes         (:nodes opts)
                          :faults        (:nemesis opts)
-                         :partition     {:targets [:one :majority]}
-                         :pause         {:targets [:one :majority :all]}
-                         :kill          {:targets [:one :majority :all]}
+                         :partition     {:targets [:one :primaries :majority]}
+                         :pause         {:targets [:one :primaries :majority :all]}
+                         :kill          {:targets #_[:one :primaries :majority :all]
+                                         [:one, :primaries]}
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload
@@ -121,7 +124,7 @@
            {:name     (test-name opts)
             :os       os
             :db       db
-            :plot     {:nemeses (:perf nemesis)}
+            :primary-tracker primary-tracker
             :checker  (checker/compose
                         {:perf       (checker/perf)
                          :clock      (checker/clock-plot)
@@ -130,9 +133,11 @@
                          :workload   (:checker workload)})
             :client    (:client workload)
             :nemesis   (:nemesis nemesis jepsen.nemesis/noop)
+            :plot      {:nemeses (:perf nemesis)}
             :generator generator
             :logging   {:overrides logging-overrides}
             :remote    (scp/remote control/ssh)
+            :nonserializable-keys [:primary-tracker]
             })))
 
 (def cli-opts

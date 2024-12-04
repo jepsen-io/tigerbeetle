@@ -1,16 +1,58 @@
 (ns jepsen.tigerbeetle.repl
   "The REPL drops you here."
   (:require [clojure.tools.logging :refer [info warn]]
+            [dom-top.core :refer [loopr]]
             [jepsen [history :as h]
                     [store :as store]]
             [tesser.core :as t]))
+
+(defn reads-of
+  "Takes an ID. Returns [[invoke, complete]] op pairs which tried to or
+  successfully read that ID, with values restricted to just that specific ID,
+  rather than vectors of all IDs."
+  [id history]
+  (assert (instance? clojure.lang.BigInt id)
+          (str "Expected bigint ID, got " (pr-str id)))
+  (->> (t/filter h/invoke?)
+       (t/keep
+         (fn per-op [op]
+                 (let [op' (h/completion h op)]
+                   (case (:f op)
+                     ; Look at query
+                     (:lookup-accounts, :lookup-transfers)
+                     (let [i (loopr [i 0]
+                                    [id2 (:value op)]
+                                    (if (= id id2)
+                                      i
+                                      (recur (inc i)))
+                                    nil)]
+                           (when i
+                             [(update op :value nth i)
+                              (update op' :value nth i)]))
+
+                     ; Look at results
+                     (:get-account-transfers)
+                     (let [i (loopr [i 0]
+                                    [event (:value op')]
+                                    (if (= id (:id event))
+                                      i
+                                      (recur (inc i)))
+                                    nil)]
+                       (when i
+                         [op
+                          (update op' :value nth i)]))
+
+                     nil))))
+       (t/into [])
+       (h/tesser history)))
 
 (defn find-by
   "Finds a single account or transfer by a given predicate."
   [pred history]
   (->> (t/filter h/ok?)
        (t/filter (h/has-f? #{:lookup-accounts
-                             :lookup-transfers}))
+                             :lookup-transfers
+                             :get-account-transfers}))
        (t/mapcat :value)
        (t/filter pred)
        t/first
@@ -19,6 +61,8 @@
 (defn find-by-id
   "Finds a single account or transfer by ID."
   [id history]
+  (assert (instance? clojure.lang.BigInt id)
+          (str "Expected bigint ID, got " (pr-str id)))
   (find-by #(= id (:id %)) history))
 
 (defn find-by-ts

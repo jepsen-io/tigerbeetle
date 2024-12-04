@@ -10,9 +10,11 @@
             [clojure.core.protocols :refer [Datafiable]]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
-            [jepsen [util :as util :refer [timeout]]]
+            [jepsen [util :as util :refer [timeout
+                                           secs->nanos]]]
             [jepsen.control.net :as cn]
             [jepsen.tigerbeetle [core :refer [cluster-id port]]]
+            [potemkin :refer [definterface+]]
             [slingshot.slingshot :refer [try+ throw+]])
   (:import (com.tigerbeetle AccountBatch
                             AccountFilter
@@ -28,6 +30,13 @@
                             TransferBatch
                             TransferFlags)
            (java.util Arrays)))
+
+; Helpers
+
+(defn ^bytes uuid
+  "Generates a new UUID using the TigerBeetle Java helper"
+  []
+  (UInt128/id))
 
 ; Serialization
 
@@ -258,36 +267,6 @@
         (persistent! accounts)
         (recur (conj! accounts (account-batch-current->clj b)))))))
 
-; Helpers
-
-(defn ^bytes uuid
-  "Generates a new UUID using the TigerBeetle Java helper"
-  []
-  (UInt128/id))
-
-; Client
-
-(defn open
-  "Opens a client to the given node."
-  [test node]
-  (Client. (UInt128/asBytes cluster-id)
-           ; Client can only take IP addresses, not hostnames. Clients also
-           ; *must* receive the full list of nodes. However, we want to ensure
-           ; that clients talk to a specific node, so we have a chance to see
-           ; when two nodes disagree. We give them fake ports for all but the
-           ; target node.
-           (->> (:nodes test)
-                (map (fn [some-node]
-                       (str (cn/ip some-node) ":" (if (= node some-node)
-                                                    port
-                                                    1))))
-                into-array)))
-
-(defn close!
-  "Close a client"
-  [^Client client]
-  (.close client))
-
 (defn create-account-result-batch->clj
   "Converts a CreateAccountResultBatch to a Clojure vector. Also takes the
   request responsible for producing this response. Since result batches only
@@ -329,38 +308,6 @@
                   (.getIndex res)
                   (create-transfer-result->keyword (.getResult res)))
             (recur))))))
-
-(defn deref+
-  "Takes a client and future. Dereferences the future. Throws and closes client
-  on timeout."
-  [client fut]
-  (let [res (deref fut 5000 ::timeout)]
-    (when (identical? res ::timeout)
-      (close! client)
-      (throw+ {:type :timeout}))
-    res))
-
-(defn create-accounts!
-  "Takes a client and a vector of account maps. Returns
-
-    {:timestamp The server timestamp for this write
-     :value     A vector of result keywords.}"
-  [^Client c, accounts]
-  (let [req (account-batch accounts)
-        res (deref+ c (.createAccountsAsync c req))]
-    {:timestamp (.getTimestamp (.getHeader res))
-     :value     (create-account-result-batch->clj req res)}))
-
-(defn create-transfers!
-  "Takes a client and a vector of transfer maps. Returns
-
-    {:timestamp The server timestamp for this write
-     :value     A vector of result keywords.}"
-  [^Client c, transfers]
-  (let [req (transfer-batch transfers)
-        res (deref+ c (.createTransfersAsync c req))]
-    {:timestamp (.getTimestamp (.getHeader res))
-     :value     (create-transfer-result-batch->clj req res)}))
 
 (defn read-batch
   "Takes a batch and a function which reads off the current element of the
@@ -404,34 +351,142 @@
    (mapv (partial bm/get (index-batch transfer-batch-current->clj res))
          ids)))
 
-(defn lookup-accounts
-  "Takes a client and a vector of IDs. Returns
+; Primary tracking
 
-    {:timestamp The server timestamp for the operation
-     :value     A vector of account maps.}"
-   [^Client c, ids]
-   (let [req (id-batch ids)
-         res  (deref+ c (.lookupAccountsAsync c req))]
-     {:timestamp (.getTimestamp (.getHeader res))
-      :value     (account-batch->clj ids res)}))
+(defn primary-tracker
+  "TigerBeetle doesn't provide a way to figure out which nodes currently think
+  they're the leader. However, it's useful for fault injection to target
+  leaders more often. To track this, we store information about which nodes are
+  currently accepting writes in a `primary tracker` atom. The test has a single
+  one of these atoms.
 
-(defn lookup-transfers
-  "Takes a client and a vector of transfer IDs. Returns
+  The atom stores a map of node names to the time we most recently completed a
+  write against that node."
+  []
+  (atom {}))
 
-    {:timestamp The server timestamp for this operation
-     :value     A vector of transfer maps.}"
-  [^Client c, ids]
-  (let [req (id-batch ids)
-        res (deref+ c (.lookupTransfersAsync c req))]
-    {:timestamp (.getTimestamp (.getHeader res))
-     :value     (transfer-batch->clj ids res)}))
+(defn primary-tracker-write-completed!
+  "Updates a primary tracker to indicate that we completed a write against the
+  given node."
+  [primary-tracker node]
+  (let [time (System/nanoTime)]
+    (swap! primary-tracker
+           (fn [tracker]
+             (let [t (get tracker node 0)]
+               (assoc tracker node (max t time)))))))
 
-(defn get-account-transfers
-  "Takes a client and a map representing an account filter. Returns
+(defn primary-tracker-primaries
+  "Returns all nodes which have performed a write in the last five seconds."
+  [primary-tracker]
+  (let [cutoff (- (System/nanoTime) (secs->nanos 5))]
+    (vec
+      (keep (fn [[node time]]
+              (if (<= cutoff time)
+                node))
+            @primary-tracker))))
 
-    {:timestamp   The server timestamp for this operation
-     :value       A vector of matching transfers}"
-  [^Client c, filter]
-  (let [res (deref+ c (.getAccountTransfersAsync c (account-filter filter)))]
-    {:timestamp (.getTimestamp (.getHeader res))
-     :value     (transfer-batch->clj res)}))
+; Client
+
+(definterface+ IClient
+  (create-accounts! [this accounts]
+                    "Takes a client and a vector of account maps. Returns
+
+                      {:timestamp The server timestamp for this write
+                       :value     A vector of result keywords.}")
+
+  (create-transfers! [this transfers]
+                     "Takes a client and a vector of transfer maps. Returns
+
+                       {:timestamp The server timestamp for this write
+                        :value     A vector of result keywords.}")
+
+  (lookup-accounts [this ids]
+                   "Takes a client and a vector of IDs. Returns
+
+                     {:timestamp The server timestamp for the operation
+                      :value     A vector of account maps.}")
+
+  (lookup-transfers [this ids]
+                   "Takes a client and a vector of IDs. Returns
+
+                     {:timestamp The server timestamp for this operation
+                      :value     A vector of transfer maps.}")
+
+  (get-account-transfers [this account-filter]
+                         "Takes a client and a map representing an account
+                         filter. Returns
+
+                           {:timestamp   The server timestamp for this operation
+                            :value       A vector of matching transfers}")
+
+  (close! [this]
+          "Closes the client."))
+
+(defn deref+
+  "Takes a client and future. Dereferences the future. Throws and closes client
+  on timeout."
+  [^Client client fut]
+  (let [res (deref fut 5000 ::timeout)]
+    (when (identical? res ::timeout)
+      (.close client)
+      (throw+ {:type :timeout}))
+    res))
+
+(defrecord TrackingClient [^Client client, node, primary-tracker]
+  IClient
+  (create-accounts! [this accounts]
+    (let [req (account-batch accounts)
+          res (deref+ client (.createAccountsAsync client req))]
+      (primary-tracker-write-completed! primary-tracker node)
+      {:timestamp (.getTimestamp (.getHeader res))
+       :value     (create-account-result-batch->clj req res)}))
+
+  (create-transfers! [this transfers]
+    (let [req (transfer-batch transfers)
+          res (deref+ client (.createTransfersAsync client req))]
+      (primary-tracker-write-completed! primary-tracker node)
+      {:timestamp (.getTimestamp (.getHeader res))
+       :value     (create-transfer-result-batch->clj req res)}))
+
+  (lookup-accounts [this ids]
+    (let [req (id-batch ids)
+          res  (deref+ client (.lookupAccountsAsync client req))]
+      {:timestamp (.getTimestamp (.getHeader res))
+       :value     (account-batch->clj ids res)}))
+
+  (lookup-transfers [this ids]
+    (let [req (id-batch ids)
+          res (deref+ client (.lookupTransfersAsync client req))]
+      {:timestamp (.getTimestamp (.getHeader res))
+       :value     (transfer-batch->clj ids res)}))
+
+  (get-account-transfers [this filter]
+    (let [res (deref+ client (.getAccountTransfersAsync client (account-filter filter)))]
+      {:timestamp (.getTimestamp (.getHeader res))
+       :value     (transfer-batch->clj res)}))
+
+  (close! [this]
+    (.close client))
+
+  java.lang.AutoCloseable
+  (close [this]
+    (close! this)))
+
+(defn open
+  "Opens a client to the given node."
+  [test node]
+  (TrackingClient.
+    (Client. (UInt128/asBytes cluster-id)
+           ; Client can only take IP addresses, not hostnames. Clients also
+           ; *must* receive the full list of nodes. However, we want to ensure
+           ; that clients talk to a specific node, so we have a chance to see
+           ; when two nodes disagree. We give them fake ports for all but the
+           ; target node.
+           (->> (:nodes test)
+                (map (fn [some-node]
+                       (str (cn/ip some-node) ":" (if (= node some-node)
+                                                    port
+                                                    1))))
+                into-array))
+    node
+    (:primary-tracker test)))
