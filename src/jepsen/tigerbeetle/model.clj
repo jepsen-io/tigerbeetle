@@ -611,18 +611,13 @@
    errors    ; A map of permanent errors (TigerBeetle calls these *transient*
    ; errors, but they persist forever)
 
-   ; Secondary indices.
-
-   ; Two Bifurcan maps of account ID to intmaps of timestamp -> transfer, based
-   ; on whether those transfers debited or credited that account.
-   debit-account-id->timestamps
-   credit-account-id->timestamps
-
    ; Indices for accounts
    account-ledger-index
    account-code-index
 
    ; Indices for transfers
+   transfer-debit-index   ; by debit account id
+   transfer-credit-index  ; by credit account id
    transfer-ledger-index
    transfer-code-index
    ]
@@ -1038,11 +1033,11 @@
                         transfers')
 
            ; Update secondary indices
-           credit-account-id->timestamps'
-           (update-secondary-index credit-account-id->timestamps
+           transfer-credit-index'
+           (update-secondary-index transfer-credit-index
                                    credit-account-id transfer)
-           debit-account-id->timestamps'
-           (update-secondary-index debit-account-id->timestamps
+           transfer-debit-index'
+           (update-secondary-index transfer-debit-index
                                    debit-account-id transfer)
            transfer-code-index'
            (update-secondary-index transfer-code-index code transfer)
@@ -1063,15 +1058,14 @@
                           :credit
                           (:amount pending)
                           amount'
-                          flags))
-           ]
+                          flags))]
       (assoc this'
-             :accounts                      accounts'
-             :transfers                     transfers'
-             :credit-account-id->timestamps credit-account-id->timestamps'
-             :debit-account-id->timestamps  debit-account-id->timestamps'
-             :transfer-code-index           transfer-code-index'
-             :transfer-ledger-index         transfer-ledger-index')))
+             :accounts              accounts'
+             :transfers             transfers'
+             :transfer-debit-index  transfer-debit-index'
+             :transfer-credit-index transfer-credit-index'
+             :transfer-code-index   transfer-code-index'
+             :transfer-ledger-index transfer-ledger-index')))
 
   (create-accounts-chain [this accounts import?]
     (create-chain this create-account accounts import?))
@@ -1150,10 +1144,10 @@
     ; Begin our search with the involved accounts
     (-> (cond-> (bim/int-map)
           (:debits flags)
-          (bm-union (bm/get debit-account-id->timestamps account-id))
+          (bm-union (bm/get transfer-debit-index account-id))
 
           (:credits flags)
-          (bm-union (bm/get credit-account-id->timestamps account-id)))
+          (bm-union (bm/get transfer-credit-index account-id)))
 
         ; Restrict by code
         (bm-intersection (bm/get transfer-code-index code))
@@ -1270,10 +1264,10 @@
             :accounts                      bm/empty
             :transfers                     bm/empty
             :errors                        bm/empty
-            :debit-account-id->timestamps  bm/empty
-            :credit-account-id->timestamps bm/empty
             :account-code-index            bm/empty
             :account-ledger-index          bm/empty
             :transfer-code-index           bm/empty
             :transfer-ledger-index         bm/empty
+            :transfer-debit-index          bm/empty
+            :transfer-credit-index         bm/empty
             }))
