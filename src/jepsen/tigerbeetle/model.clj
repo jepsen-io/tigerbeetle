@@ -543,18 +543,21 @@
   2. Each timestamp uniquely identifies a single transfer or account.
 
   This lets us do something cute. We store our secondary indices using
-  Bifurcan integer maps of timestamp->transfer. These maps give us efficient
+  Bifurcan integer maps of timestamp-id. These maps give us efficient
   union, intersection, slice, and ordered traversal by timestamp. Moreover,
   integer comparison is much faster than comparing the full transfer or
   account objects. So each index is a map of, say, `debit account id` ->
-  `timestamp` -> `transfer`."
+  `timestamp` -> `id`.
+
+  Why store ids instead of transfers or account directly? Accounts are partly
+  mutable--their balances change. We have to go look them up when constructing
+  responses."
   [index k-val v]
   (bm/update index k-val
              (fn [timestamp-int-map]
                (bim/put (or timestamp-int-map (bim/int-map))
                         (:timestamp v)
-                        v))))
-
+                        (:id v)))))
 
 (defn has-user-data?
   "Takes a user-data value. Nil signifies any user data. Returns a predicate of
@@ -565,11 +568,11 @@
     any?))
 
 (defn query-scan
-  "Takes an intmap of timestamps to values (e.g. accounts or transfers), a
-  predicate which each value must satisfy, a limit to the number of results,
-  and whether we traverse in reversed order. Returns a vector of resulting
-  values."
-  [pool pred? limit reverse?]
+  "Takes an intmap of timestamps to ids (e.g. of accounts or transfers), a
+  function `(read id) -> value`, a predicate which each value must satisfy, a
+  limit to the number of results, and whether we traverse in reversed order.
+  Returns a vector of resulting values."
+  [pool read pred? limit reverse?]
   (let [n     (b/size pool)
         dir   (if reverse? -1 1)
         start (if reverse? (dec n) 0)]
@@ -583,10 +586,11 @@
             (not (< -1 i n))
             (persistent! results)
 
-            ; Check this transfer
+            ; Check this value
             true
-            (let [i' (+ i dir)
-                  value (bm/value (b/nth pool i))]
+            (let [i'    (+ i dir)
+                  id    (bm/value (b/nth pool i))
+                  value (read id)]
               (if (pred? value)
                 (recur i' (conj! results value))
                 (recur i' results)))))))
@@ -1082,11 +1086,11 @@
     (create-helper this invoke ok create-transfers-chain :transfer))
 
   (read-account [this id]
-    ; TODO: compute balances
     (bm/get accounts id))
 
   (read-transfer [this id]
-    (bm/get transfers id))
+    (-> (bm/get transfers id)
+        (dissoc :state)))
 
   (lookup-accounts [this invoke ok]
     (let [ids    (:value invoke)
@@ -1158,7 +1162,8 @@
         (bim-slice timestamp-min timestamp-max)
 
         ; Linear scan
-        (query-scan (has-user-data? user-data)
+        (query-scan (partial read-transfer this)
+                    (has-user-data? user-data)
                     limit
                     (:reverse flags))))
 
@@ -1203,7 +1208,8 @@
               ; Timestamp constraints
               (bim-slice timestamp-min timestamp-max)
               ; Linear scan
-              (query-scan (has-user-data? user-data)
+              (query-scan (partial read-transfer this)
+                          (has-user-data? user-data)
                           limit
                           (:reverse flags))))
 
