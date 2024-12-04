@@ -72,6 +72,36 @@
              (fn add [extant]
                (bs/add (or extant bs/empty) v))))
 
+(defn bm-union
+  "Takes two Bifurcan maps and computes their union. `nil` symbolizes the empty
+  set."
+  [a b]
+  (cond (nil? a) b
+        (nil? b) a
+        true     (bm/union a b)))
+
+(defn bm-intersection
+  "Takes two Bifurcan maps and computes their intersection. `nil`
+  symbolizes the universal set."
+  [a b]
+  (cond (nil? a) b
+        (nil? b) a
+        true     (bm/intersection a b)))
+
+(defn bim-slice
+  "Takes an intmap, a minimum (possibly nil), maximum (also possibly nil), and
+  an integer map. Slices m from min to max, inclusive. A nil min or max means
+  unbounded in that direction."
+  [m min max]
+  (let [n   (b/size m)
+        min (or min
+                (when (= 0 n) 0)
+                (bm/key (b/nth m 0)))
+        max (or max
+                (when (= 0 n) 0)
+                (bm/key (b/nth m (dec n))))]
+    (bim/slice m min max)))
+
 ;; Models
 
 (definterface+ IModel
@@ -143,6 +173,14 @@
                           "Returns a vector of transfers matching the given
                           account filter.")
 
+  (query-accounts [model query-filter]
+                  "Returns a vector of accounts matching the given query
+                  filter.")
+
+  (query-transfers- [model query-filter]
+                    "Returns a vector of transfers matching the given query
+                    filter.")
+
   ; API operations
   (create-accounts [model invoke ok]
                    "Applies a single create-accounts operation to the model,
@@ -161,8 +199,16 @@
                     returning model'")
 
   (get-account-transfers [model invoke op]
-                         "Applies a single get-account-transfer operation to the
-                         model, returning model'"))
+                         "Applies a single get-account-transfers operation to
+                         the model, returning model'")
+
+  (query-accounts [model invoke op]
+                  "Applies a single query-accounts operation to the model,
+                  returning model'")
+
+  (query-transfers [model invoke op]
+                   "Applies a single query-transfers operation to the model,
+                   returning model'"))
 
 (def timestamp-upper-bound
   "One bigger than the biggest timestamp for an imported event (2^63)"
@@ -509,6 +555,33 @@
                         (:timestamp v)
                         v))))
 
+(defn query-scan
+  "Takes an intmap of timestamps to values (e.g. accounts or transfers), a
+  predicate which each value must satisfy, a limit to the number of results,
+  and whether we traverse in reversed order. Returns a vector of resulting
+  values."
+  [pool pred? limit reverse?]
+  (let [n     (b/size pool)
+        dir   (if reverse? -1 1)
+        start (if reverse? (dec n) 0)]
+    (loop [i       start
+           results (transient [])]
+      (cond ; Full
+            (= (count results) limit)
+            (persistent! results)
+
+            ; Out of bounds
+            (not (< -1 i n))
+            (persistent! results)
+
+            ; Check this transfer
+            true
+            (let [i' (+ i dir)
+                  value (bm/value (b/nth pool i))]
+              (if (pred? value)
+                (recur i' (conj! results value))
+                (recur i' results)))))))
+
 (defrecord TB
   [; A pair of maps of account/transfer ID to timestamp, derived from the
    ; observed history. We use these to advance time synthetically throughout
@@ -523,13 +596,22 @@
    accounts  ; A map of account IDs to accounts
    transfers ; A map of transfer IDs to transfers
    errors    ; A map of permanent errors (TigerBeetle calls these *transient*
-   ; errors, but they persist forever
+   ; errors, but they persist forever)
 
    ; Secondary indices.
+
    ; Two Bifurcan maps of account ID to intmaps of timestamp -> transfer, based
    ; on whether those transfers debited or credited that account.
    debit-account-id->timestamps
    credit-account-id->timestamps
+
+   ; Indices for accounts
+   account-ledger-index
+   account-code-index
+
+   ; Indices for transfers
+   transfer-ledger-index
+   transfer-code-index
    ]
 
   ITB
@@ -570,7 +652,9 @@
           extant     (bm/get accounts id)
           flags      (:flags account)
           imported?  (:imported flags)
-          atimestamp (:timestamp account 0)]
+          atimestamp (:timestamp account 0)
+          ledger     (:ledger account 0)
+          code       (:code account 0)]
       (cond
         ; See https://docs.tigerbeetle.com/reference/requests/create_accounts#result
         (and import? (not imported?))
@@ -635,10 +719,10 @@
         (when-let [p (:credits-posted account)] (not= 0 p))
         :credits-posted-must-be-zero
 
-        (= 0 (:ledger account))
+        (= 0 ledger)
         :ledger-must-not-be-zero
 
-        (= 0 (:code account))
+        (= 0 code)
         :code-must-not-be-zero
 
         true
@@ -670,7 +754,11 @@
                               :debits-posted 0N
                               :timestamp ts)]
           (assoc this'
-                 :accounts    (bm/put accounts id account))))))
+                 :accounts    (bm/put accounts id account)
+                 :account-code-index (update-secondary-index
+                                       account-code-index code account)
+                 :account-ledger-index (update-secondary-index
+                                         account-ledger-index ledger account))))))
 
   (create-transfer [this transfer import?]
     ; See https://docs.tigerbeetle.com/reference/requests/create_transfers
@@ -943,6 +1031,10 @@
            debit-account-id->timestamps'
            (update-secondary-index debit-account-id->timestamps
                                    debit-account-id transfer)
+           transfer-code-index'
+           (update-secondary-index transfer-code-index code transfer)
+           transfer-ledger-index'
+           (update-secondary-index transfer-ledger-index ledger transfer)
 
            ; Update accounts
            accounts'
@@ -964,7 +1056,9 @@
              :accounts                      accounts'
              :transfers                     transfers'
              :credit-account-id->timestamps credit-account-id->timestamps'
-             :debit-account-id->timestamps  debit-account-id->timestamps')))
+             :debit-account-id->timestamps  debit-account-id->timestamps'
+             :transfer-code-index           transfer-code-index'
+             :transfer-ledger-index         transfer-ledger-index')))
 
   (create-accounts-chain [this accounts import?]
     (create-chain this create-account accounts import?))
@@ -1112,6 +1206,53 @@
            :diff        (let [[- +] (diff expected actual)]
                           {:expected -, :actual +})}))))
 
+  (query-transfers- [this {:keys [user-data
+                                  ledger
+                                  code
+                                  timestamp-min
+                                  timestamp-max
+                                  limit
+                                  flags]}]
+          (-> nil
+              (bm-intersection (bm/get transfer-ledger-index ledger))
+              (bm-intersection (bm/get transfer-code-index code))
+              ; If these constraints left us with the universe, fall back
+              ; on the union of all ledgers--there should be only a few.
+              (or (reduce bm/union (bm/values transfer-code-index))
+                  ; Oh, there's NOTHING
+                  (bim/int-map))
+              ; Timestamp constraints
+              (bim-slice timestamp-min timestamp-max)
+              ; Linear scan
+              (query-scan (if user-data
+                            (fn [transfer]
+                              (= user-data (:user-data transfer)))
+                            any?)
+                          limit
+                          (:reverse flags))))
+
+  (query-transfers [this invoke ok]
+    (let [filter   (:value invoke)
+          actual   (:value ok)
+          expected (query-transfers- this filter)
+          n        (count expected)]
+      (if (= expected actual)
+        ; Good
+        (assoc this
+               :op-count (inc op-count)
+               ; Call this a single event, I guess/
+               :event-count (inc event-count))
+        ; Uh oh
+        (inconsistent
+          {:type        :model
+           :op-count    (:op-count this)
+           :event-count (:event-count this)
+           :filter      filter
+           :expected    expected
+           :actual      actual
+           :diff       (let [[- +] (diff expected actual)]
+                         {:expected -, :actual +})}))))
+
   IModel
   (step [this invoke ok]
     ;(info "Model applying" (:f invoke) (:value invoke) (:value ok))
@@ -1122,6 +1263,7 @@
                   :lookup-accounts       (lookup-accounts this invoke ok)
                   :lookup-transfers      (lookup-transfers this invoke ok)
                   :get-account-transfers (get-account-transfers this invoke ok)
+                  :query-transfers       (query-transfers this invoke ok)
                   )]
       (if (inconsistent? this')
         (assoc this'
@@ -1148,4 +1290,8 @@
             :errors                        bm/empty
             :debit-account-id->timestamps  bm/empty
             :credit-account-id->timestamps bm/empty
+            :account-code-index            bm/empty
+            :account-ledger-index          bm/empty
+            :transfer-code-index           bm/empty
+            :transfer-ledger-index         bm/empty
             }))

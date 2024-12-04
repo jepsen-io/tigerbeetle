@@ -128,6 +128,14 @@
   [model invoke-val ok-val]
   (step* :get-account-transfers model invoke-val ok-val))
 
+(def qa-step
+  "Shorthand for a query-accounts step."
+  (partial step* :query-accounts))
+
+(def qt-step
+  "Shorthand for a query-transfers step."
+  (partial step* :query-transfers))
+
 (defn consistent?
   "Not inconsistent? Returns consistent models."
   [model]
@@ -1295,3 +1303,77 @@
                         afilter
                         [(transfers' 0) (transfers' 1)])]
     (is (consistent? model))))
+
+(deftest query-transfers-test
+  (let [t10 (t 10 a1 a3 5N #{:pending})
+        t11 (assoc (t 11 a1 a3 1N) :code 2)
+        t12 (assoc (t 12 a3 a1 1N) :code 3)
+        t13 (assoc (t 13 a1 a2 1N) :code 3)
+        ; Finish the pending transfer
+        t14 (assoc (t 14 0N 0N 2N #{:post-pending-transfer}) :code 10 :pending-id 10N)
+        t10' (tts t10)
+        t11' (tts t11)
+        t12' (tts t12)
+        t13' (tts t13)
+        t14' (assoc (tts t14)
+                    :amount            2N
+                    :debit-account-id  1N
+                    :credit-account-id 3N)
+        model (-> init0
+                  (ca-step [a1 a2 a3 a4 a5] [:ok :ok :ok :ok :ok])
+                  (ct-step [t10 t11 t12 t13 t14] [:ok :ok :ok :ok :ok]))]
+    (is (consistent? model))
+
+    (testing "everything"
+      (is (consistent?
+            (qt-step model
+                      {}
+                      [t10' t11' t12' t13' t14']))))
+
+    (testing "lower timestamp bound"
+      (is (consistent?
+            (qt-step model
+                      {:ledger 1, :timestamp-min 213}
+                      [t13' t14']))))
+
+    (testing "upper timestamp bound"
+      (is (consistent?
+            (qt-step model
+                      {:timestamp-max 213}
+                      [t10' t11' t12' t13']))))
+
+    (testing "both timestamp bounds"
+      (is (consistent?
+            (qt-step model {:timestamp-min 211, :timestamp-max 213}
+                      [t11' t12' t13']))))
+
+    (testing "reverse order"
+      (is (consistent?
+            (qt-step model
+                      {:code 3
+                       :flags #{:reverse}}
+                      [t13' t12']))))
+
+    (testing "limit"
+      (is (consistent?
+            (qt-step model
+                      {:flags         #{:reverse}
+                       :limit         2
+                       :timestamp-min 211
+                       :timestamp-max 213}
+                      [t13' t12']))))
+
+    (testing "code"
+      (is (consistent?
+            (qt-step model
+                      {:account-id 1N
+                       :flags #{:credits :debits}
+                       :code 3}
+                      [t12' t13']))))
+
+    (testing "user-data"
+      (is (consistent?
+            (qt-step model
+                      {:user-data 12
+                       :code      3}
+                      [t12']))))))
