@@ -555,6 +555,15 @@
                         (:timestamp v)
                         v))))
 
+
+(defn has-user-data?
+  "Takes a user-data value. Nil signifies any user data. Returns a predicate of
+  any x which returns true iff (:user-data x) matches user-data."
+  [user-data]
+  (if user-data
+    (fn pred [x] (= user-data (:user-data x)))
+    any?))
+
 (defn query-scan
   "Takes an intmap of timestamps to values (e.g. accounts or transfers), a
   predicate which each value must satisfy, a limit to the number of results,
@@ -1127,61 +1136,31 @@
                  :diff        (let [[- +] (diff expected actual)]
                                 {:expected -, :actual +})})))))))
 
-  (get-account-transfers- [this account-filter]
-    (let [{:keys [account-id
-                  user-data
-                  code
-                  timestamp-min
-                  timestamp-max
-                  limit
-                  flags]} account-filter
-          ; Begin our search with the involved accounts
-          timestamps (cond-> (bim/int-map)
-                       (:debits flags)
-                       (bm/union (bm/get debit-account-id->timestamps
-                                         account-id (bim/int-map)))
+  (get-account-transfers- [this {:keys [account-id
+                                        user-data
+                                        code
+                                        timestamp-min
+                                        timestamp-max
+                                        limit
+                                        flags]}]
+    ; Begin our search with the involved accounts
+    (-> (cond-> (bim/int-map)
+          (:debits flags)
+          (bm-union (bm/get debit-account-id->timestamps account-id))
 
-                       (:credits flags)
-                       (bm/union (bm/get credit-account-id->timestamps
-                                         account-id (bim/int-map))))
-          ; Restrict by timestamp
-          n             (b/size timestamps)
-          timestamp-min (or timestamp-min
-                            (when (= 0 n) 0)
-                            (bm/key (b/nth timestamps 0)))
-          timestamp-max (or timestamp-max
-                            (when (= 0 n) 0)
-                            (bm/key (b/nth timestamps (dec n))))
-          timestamps    (bim/slice timestamps timestamp-min timestamp-max)
-          n             (b/size timestamps)
+          (:credits flags)
+          (bm-union (bm/get credit-account-id->timestamps account-id)))
 
-          ; Linear scan to build up expected results
-          dir           (if (:reverse flags) -1 1)
-          start         (if (:reverse flags) (dec n) 0)
-          expected ; A vector of transfers
-          (loop [i       start
-                 results (transient [])]
-            (cond ; Full
-                  (= (count results) limit)
-                  (persistent! results)
+        ; Restrict by code
+        (bm-intersection (bm/get transfer-code-index code))
 
-                  ; Out of bounds
-                  (not (< -1 i n))
-                  (persistent! results)
+        ; Restrict by timestamp
+        (bim-slice timestamp-min timestamp-max)
 
-                  ; Check this transfer
-                  true
-                  (let [i'       (+ i dir)
-                        transfer (bm/value (b/nth timestamps i))]
-                    (cond (and user-data (not= user-data (:user-data transfer)))
-                          (recur i' results)
-
-                          (and code (not= code (:code transfer)))
-                          (recur i' results)
-
-                          true
-                          (recur i' (conj! results transfer))))))]
-      expected))
+        ; Linear scan
+        (query-scan (has-user-data? user-data)
+                    limit
+                    (:reverse flags))))
 
   (get-account-transfers [this invoke ok]
     (let [account-filter (:value invoke)
@@ -1224,10 +1203,7 @@
               ; Timestamp constraints
               (bim-slice timestamp-min timestamp-max)
               ; Linear scan
-              (query-scan (if user-data
-                            (fn [transfer]
-                              (= user-data (:user-data transfer)))
-                            any?)
+              (query-scan (has-user-data? user-data)
                           limit
                           (:reverse flags))))
 
