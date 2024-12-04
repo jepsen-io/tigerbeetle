@@ -100,7 +100,9 @@
         generator (gen/phases
                     (->> (:generator workload)
                          (gen/stagger (/ (:rate opts)))
-                         (gen/nemesis (:generator nemesis))
+                         (gen/nemesis
+                           (gen/phases (gen/sleep (:initial-quiet-period opts))
+                                       (:generator nemesis)))
                          (gen/time-limit (:time-limit opts)))
                     ; We always run the nemesis final generator; it makes
                     ; it easier to do ad-hoc analysis of a running cluster
@@ -148,7 +150,10 @@
     :parse-fn read-string
     :validate [#(and (number? %) (pos? %)) "must be a positive number"]]
 
-   [nil "--[no-]idempotence" "If true, asks producers to enable idempotence. If omitted, uses client defaults."]
+   [nil "--initial-quiet-period SECONDS" "How long to wait before beginning faults"
+    :default 10
+    :parse-fn read-string
+    :validate [#(and (number? %) (pos? %)) "must be a positive number"]]
 
    [nil "--nemesis FAULTS" "A comma-separated list of nemesis faults to enable"
     :parse-fn parse-nemesis-spec
