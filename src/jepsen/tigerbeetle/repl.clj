@@ -16,7 +16,7 @@
   (->> (t/filter h/invoke?)
        (t/keep
          (fn per-op [op]
-                 (let [op' (h/completion h op)]
+                 (let [op' (h/completion history op)]
                    (case (:f op)
                      ; Look at query
                      (:lookup-accounts, :lookup-transfers)
