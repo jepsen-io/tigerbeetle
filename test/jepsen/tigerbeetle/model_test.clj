@@ -1304,6 +1304,72 @@
                         [(transfers' 0) (transfers' 1)])]
     (is (consistent? model))))
 
+(deftest query-accounts-test
+  (let [t10 (t 10 a1 a2 1N)
+        t10' (tts t10)
+        a1   (assoc a1 :code 1 :user-data 1)
+        a2   (assoc a2 :code 1 :user-data 2)
+        a3   (assoc a3 :code 1 :user-data 2)
+        a4   (assoc a4 :code 1 :user-data 2)
+        a5   (assoc a5 :code 2 :user-data 1)
+        a1'  (assoc (ats a1) :debits-posted 1N)
+        a2'  (assoc (ats a2) :credits-posted 1N)
+        a3'  (ats a3)
+        a4'  (ats a4)
+        a5'  (ats a5)
+        model (-> init0
+                  (ca-step [a1 a2 a3 a4 a5] [:ok :ok :ok :ok :ok])
+                  ; This transfer is just so we can see the diff between
+                  ; initial and current account states
+                  (ct-step [t10] [:ok]))]
+    (is (consistent? model))
+
+    (testing "everything"
+      (is (consistent?
+            (qa-step model
+                      {}
+                      [a1' a2' a3' a4' a5']))))
+
+    (testing "lower timestamp bound"
+      (is (consistent?
+            (qa-step model
+                      {:timestamp-min 103}
+                      [a3' a4' a5']))))
+
+    (testing "upper timestamp bound"
+      (is (consistent?
+            (qa-step model
+                      {:timestamp-max 103}
+                      [a1' a2' a3']))))
+
+    (testing "both timestamp bounds"
+      (is (consistent?
+            (qa-step model {:code 1, :timestamp-min 102, :timestamp-max 103}
+                      [a2' a3']))))
+
+    (testing "reverse order"
+      (is (consistent?
+            (qa-step model {:user-data 2, :flags #{:reverse}}
+                     [a4' a3' a2']))))
+
+    (testing "limit"
+      (is (consistent?
+            (qa-step model
+                      {:flags         #{:reverse}
+                       :limit         2
+                       :timestamp-min 102
+                       :timestamp-max 104}
+                      [a4' a3']))))
+    (testing "code"
+      (is (consistent?
+            (qa-step model {:code 1}
+                     [a1' a2' a3' a4']))))
+
+    (testing "user-data"
+      (is (consistent?
+            (qa-step model {:user-data 1}
+                      [a1' a5']))))))
+
 (deftest query-transfers-test
   (let [t10 (t 10 a1 a3 5N #{:pending})
         t11 (assoc (t 11 a1 a3 1N) :code 2)

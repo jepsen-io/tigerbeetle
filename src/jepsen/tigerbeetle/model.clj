@@ -57,6 +57,12 @@
           ; Equal all the way
           nil)))))
 
+(defn diff-map
+  "A little map with :expected and :actual keys."
+  [expected actual]
+  (let [[- +] (diff expected actual)]
+    {:expected -, :actual +}))
+
 (defn fill-list
   "Constructs a Bifurcan list of n elements of x."
   [n x]
@@ -173,7 +179,7 @@
                           "Returns a vector of transfers matching the given
                           account filter.")
 
-  (query-accounts [model query-filter]
+  (query-accounts- [model query-filter]
                   "Returns a vector of accounts matching the given query
                   filter.")
 
@@ -1107,8 +1113,7 @@
                  :id          id
                  :expected    expected
                  :actual      actual
-                 :diff        (let [[- +] (diff expected actual)]
-                                {:expected -, :actual +})})))))))
+                 :diff        (diff-map expected actual)})))))))
 
   (lookup-transfers [this invoke ok]
     (let [ids     (:value invoke)
@@ -1131,8 +1136,92 @@
                  :id          id
                  :expected    expected
                  :actual      actual
-                 :diff        (let [[- +] (diff expected actual)]
-                                {:expected -, :actual +})})))))))
+                 :diff        (diff-map expected actual)})))))))
+
+  (query-accounts- [this {:keys [user-data
+                                 ledger
+                                 code
+                                 timestamp-min
+                                 timestamp-max
+                                 limit
+                                 flags]}]
+    (-> nil
+        (bm-intersection (bm/get account-ledger-index ledger))
+        (bm-intersection (bm/get account-code-index code))
+        ; If these constraints left us with the universe, fall back on the
+        ; union of all ledgers
+        (or (reduce bm/union (bm/values account-ledger-index))
+            ; Oh, there's NOTHING
+            (bim/int-map))
+        ; Timestamp constraints
+        (bim-slice timestamp-min timestamp-max)
+        ; Linear scan
+        (query-scan (partial read-account this)
+                    (has-user-data? user-data)
+                    limit
+                    (:reverse flags))))
+
+  (query-accounts [this invoke ok]
+    (let [filter (:value invoke)
+          actual (:value ok)
+          expected (query-accounts- this filter)]
+      (if (= expected actual)
+        ; Good
+        (assoc this
+               :op-count (inc op-count)
+               :event-count (inc event-count))
+        ; Uh oh
+        (inconsistent
+          {:type        :model
+           :op-count    op-count
+           :event-count event-count
+           :filter      filter
+           :expected    expected
+           :actual      actual
+           :diff        (diff-map expected actual)}))))
+
+  (query-transfers- [this {:keys [user-data
+                                  ledger
+                                  code
+                                  timestamp-min
+                                  timestamp-max
+                                  limit
+                                  flags]}]
+          (-> nil
+              (bm-intersection (bm/get transfer-ledger-index ledger))
+              (bm-intersection (bm/get transfer-code-index code))
+              ; If these constraints left us with the universe, fall back
+              ; on the union of all ledgers--there should be only a few.
+              (or (reduce bm/union (bm/values transfer-ledger-index))
+                  ; Oh, there's NOTHING
+                  (bim/int-map))
+              ; Timestamp constraints
+              (bim-slice timestamp-min timestamp-max)
+              ; Linear scan
+              (query-scan (partial read-transfer this)
+                          (has-user-data? user-data)
+                          limit
+                          (:reverse flags))))
+
+  (query-transfers [this invoke ok]
+    (let [filter   (:value invoke)
+          actual   (:value ok)
+          expected (query-transfers- this filter)]
+      (if (= expected actual)
+        ; Good
+        (assoc this
+               :op-count (inc op-count)
+               ; Call this a single event, I guess/
+               :event-count (inc event-count))
+        ; Uh oh
+        (inconsistent
+          {:type        :model
+           :op-count    op-count
+           :event-count event-count
+           :filter      filter
+           :expected    expected
+           :actual      actual
+           :diff        (diff-map expected actual)}))))
 
   (get-account-transfers- [this {:keys [account-id
                                         user-data
@@ -1176,58 +1265,12 @@
         ; Uh oh
         (inconsistent
           {:type        :model
-           :op-count    (:op-count this)
-           :event-count (:event-count this)
+           :op-count    op-count
+           :event-count event-count
            :filter      account-filter
            :expected    expected
            :actual      actual
-           :diff        (let [[- +] (diff expected actual)]
-                          {:expected -, :actual +})}))))
-
-  (query-transfers- [this {:keys [user-data
-                                  ledger
-                                  code
-                                  timestamp-min
-                                  timestamp-max
-                                  limit
-                                  flags]}]
-          (-> nil
-              (bm-intersection (bm/get transfer-ledger-index ledger))
-              (bm-intersection (bm/get transfer-code-index code))
-              ; If these constraints left us with the universe, fall back
-              ; on the union of all ledgers--there should be only a few.
-              (or (reduce bm/union (bm/values transfer-code-index))
-                  ; Oh, there's NOTHING
-                  (bim/int-map))
-              ; Timestamp constraints
-              (bim-slice timestamp-min timestamp-max)
-              ; Linear scan
-              (query-scan (partial read-transfer this)
-                          (has-user-data? user-data)
-                          limit
-                          (:reverse flags))))
-
-  (query-transfers [this invoke ok]
-    (let [filter   (:value invoke)
-          actual   (:value ok)
-          expected (query-transfers- this filter)
-          n        (count expected)]
-      (if (= expected actual)
-        ; Good
-        (assoc this
-               :op-count (inc op-count)
-               ; Call this a single event, I guess/
-               :event-count (inc event-count))
-        ; Uh oh
-        (inconsistent
-          {:type        :model
-           :op-count    (:op-count this)
-           :event-count (:event-count this)
-           :filter      filter
-           :expected    expected
-           :actual      actual
-           :diff       (let [[- +] (diff expected actual)]
-                         {:expected -, :actual +})}))))
+           :diff        (diff-map expected actual)}))))
 
   IModel
   (step [this invoke ok]
@@ -1238,8 +1281,9 @@
                   :create-transfers      (create-transfers this invoke ok)
                   :lookup-accounts       (lookup-accounts this invoke ok)
                   :lookup-transfers      (lookup-transfers this invoke ok)
-                  :get-account-transfers (get-account-transfers this invoke ok)
+                  :query-accounts        (query-accounts this invoke ok)
                   :query-transfers       (query-transfers this invoke ok)
+                  :get-account-transfers (get-account-transfers this invoke ok)
                   )]
       (if (inconsistent? this')
         (assoc this'
