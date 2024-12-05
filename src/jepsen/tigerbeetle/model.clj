@@ -677,12 +677,14 @@
    ; Indices for accounts
    account-ledger-index
    account-code-index
+   account-user-data-index
 
    ; Indices for transfers
    transfer-debit-index   ; by debit account id
    transfer-credit-index  ; by credit account id
    transfer-ledger-index
    transfer-code-index
+   transfer-user-data-index
    ]
 
   ITB
@@ -725,7 +727,8 @@
           imported?  (:imported flags)
           atimestamp (:timestamp account 0)
           ledger     (:ledger account 0)
-          code       (:code account 0)]
+          code       (:code account 0)
+          user-data  (:user-data account 0)]
       (cond
         ; See https://docs.tigerbeetle.com/reference/requests/create_accounts#result
         (and import? (not imported?))
@@ -762,7 +765,7 @@
           :exists-with-different-flags
 
           ; We don't do 64/32, just 128
-          (not= (:user-data extant) (:user-data account))
+          (not= (:user-data extant) user-data)
           :exists-with-different-user-data-128
 
           (not= (:ledger extant) (:ledger account))
@@ -829,7 +832,11 @@
                  :account-code-index (update-secondary-index
                                        account-code-index code account)
                  :account-ledger-index (update-secondary-index
-                                         account-ledger-index ledger account))))))
+                                         account-ledger-index ledger account)
+                 :account-user-data-index
+                 (update-secondary-index
+                   account-user-data-index user-data account))))))
+
 
   (create-transfer [this transfer import?]
     ; See https://docs.tigerbeetle.com/reference/requests/create_transfers
@@ -838,10 +845,10 @@
                    credit-account-id
                    debit-account-id
                    amount
-                   user-data
                    ledger
                    code]} transfer
            extant (bm/get transfers id)
+           user-data  (:user-data transfer 0)
            pending-id (:pending-id transfer 0N)
 
            ; Did this already fail?
@@ -1106,6 +1113,8 @@
            (update-secondary-index transfer-code-index code transfer)
            transfer-ledger-index'
            (update-secondary-index transfer-ledger-index ledger transfer)
+           transfer-user-data-index'
+           (update-secondary-index transfer-user-data-index user-data transfer)
 
            ; Update accounts
            accounts'
@@ -1123,12 +1132,13 @@
                           amount'
                           flags))]
       (assoc this'
-             :accounts              accounts'
-             :transfers             transfers'
-             :transfer-debit-index  transfer-debit-index'
-             :transfer-credit-index transfer-credit-index'
-             :transfer-code-index   transfer-code-index'
-             :transfer-ledger-index transfer-ledger-index')))
+             :accounts                 accounts'
+             :transfers                transfers'
+             :transfer-debit-index     transfer-debit-index'
+             :transfer-credit-index    transfer-credit-index'
+             :transfer-code-index      transfer-code-index'
+             :transfer-ledger-index    transfer-ledger-index'
+             :transfer-user-data-index transfer-user-data-index')))
 
   (create-accounts-chain [this accounts import?]
     (create-chain this create-account accounts import?))
@@ -1203,10 +1213,14 @@
                                  limit
                                  flags]}]
     (-> nil
-        (bm-intersection (when ledger
-                           (bm/get account-ledger-index ledger (bim/int-map))))
+        (bm-intersection (when user-data
+                           (bm/get account-user-data-index
+                                   user-data
+                                   (bim/int-map))))
         (bm-intersection (when code
                            (bm/get account-code-index code (bim/int-map))))
+        (bm-intersection (when ledger
+                           (bm/get account-ledger-index ledger (bim/int-map))))
         ; If these constraints left us with the universe, fall back on the
         ; union of all ledgers
         (or (reduce bm/union (bim/int-map) (bm/values account-ledger-index)))
@@ -1214,7 +1228,7 @@
         (bim-slice timestamp-min timestamp-max)
         ; Linear scan
         (query-scan (partial read-account this)
-                    (has-user-data? user-data)
+                    any?
                     limit
                     (:reversed flags))))
 
@@ -1245,10 +1259,14 @@
                                   limit
                                   flags]}]
     (-> nil
-        (bm-intersection (when ledger
-                           (bm/get transfer-ledger-index ledger (bim/int-map))))
+        (bm-intersection (when user-data
+                           (bm/get transfer-user-data-index
+                                   user-data
+                                   (bim/int-map))))
         (bm-intersection (when code
                            (bm/get transfer-code-index code (bim/int-map))))
+        (bm-intersection (when ledger
+                           (bm/get transfer-ledger-index ledger (bim/int-map))))
         ; If these constraints left us with the universe, fall back
         ; on the union of all ledgers--there should be only a few.
         (or (reduce bm/union
@@ -1258,7 +1276,7 @@
         (bim-slice timestamp-min timestamp-max)
         ; Linear scan
         (query-scan (partial read-transfer this)
-                    (has-user-data? user-data)
+                    any?
                     limit
                     (:reversed flags))))
 
@@ -1295,6 +1313,11 @@
           (bm-union (bm/get transfer-debit-index account-id))
           (:credits flags)
           (bm-union (bm/get transfer-credit-index account-id)))
+        ; Restrict by user-data
+        (bm-intersection
+          (when user-data (bm/get transfer-user-data-index
+                                  user-data
+                                  (bim/int-map))))
         ; Restrict by code
         (bm-intersection
           (when code (bm/get transfer-code-index code (bim/int-map))))
@@ -1302,7 +1325,7 @@
         (bim-slice timestamp-min timestamp-max)
         ; Linear scan
         (query-scan (partial read-transfer this)
-                    (has-user-data? user-data)
+                    any?
                     limit
                     (:reversed flags))))
 
@@ -1366,8 +1389,10 @@
             :errors                        bm/empty
             :account-code-index            bm/empty
             :account-ledger-index          bm/empty
+            :account-user-data-index       bm/empty
             :transfer-code-index           bm/empty
             :transfer-ledger-index         bm/empty
             :transfer-debit-index          bm/empty
             :transfer-credit-index         bm/empty
+            :transfer-user-data-index      bm/empty
             }))
