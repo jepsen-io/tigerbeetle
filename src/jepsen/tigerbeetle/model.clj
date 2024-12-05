@@ -675,11 +675,13 @@
    ; errors, but they persist forever)
 
    ; Indices for accounts
+   account-index
    account-ledger-index
    account-code-index
    account-user-data-index
 
    ; Indices for transfers
+   transfer-index
    transfer-debit-index   ; by debit account id
    transfer-credit-index  ; by credit account id
    transfer-ledger-index
@@ -829,6 +831,8 @@
                               :timestamp ts)]
           (assoc this'
                  :accounts    (bm/put accounts id account)
+                 :account-index      (update-secondary-index
+                                       account-index true account)
                  :account-code-index (update-secondary-index
                                        account-code-index code account)
                  :account-ledger-index (update-secondary-index
@@ -1103,6 +1107,8 @@
                         transfers')
 
            ; Update secondary indices
+           transfer-index'
+           (update-secondary-index transfer-index true transfer)
            transfer-credit-index'
            (update-secondary-index transfer-credit-index
                                    credit-account-id transfer)
@@ -1134,6 +1140,7 @@
       (assoc this'
              :accounts                 accounts'
              :transfers                transfers'
+             :transfer-index           transfer-index'
              :transfer-debit-index     transfer-debit-index'
              :transfer-credit-index    transfer-credit-index'
              :transfer-code-index      transfer-code-index'
@@ -1222,8 +1229,8 @@
         (bm-intersection (when ledger
                            (bm/get account-ledger-index ledger (bim/int-map))))
         ; If these constraints left us with the universe, fall back on the
-        ; union of all ledgers
-        (or (reduce bm/union (bim/int-map) (bm/values account-ledger-index)))
+        ; global index
+        (or (bm/get account-index true (bim/int-map)))
         ; Timestamp constraints
         (bim-slice timestamp-min timestamp-max)
         ; Linear scan
@@ -1267,11 +1274,9 @@
                            (bm/get transfer-code-index code (bim/int-map))))
         (bm-intersection (when ledger
                            (bm/get transfer-ledger-index ledger (bim/int-map))))
-        ; If these constraints left us with the universe, fall back
-        ; on the union of all ledgers--there should be only a few.
-        (or (reduce bm/union
-                    (bim/int-map)
-                    (bm/values transfer-ledger-index)))
+        ; If these constraints left us with the universe, fall back on the
+        ; global index.
+        (or (bm/get transfer-index true (bim/int-map)))
         ; Timestamp constraints
         (bim-slice timestamp-min timestamp-max)
         ; Linear scan
@@ -1387,9 +1392,11 @@
             :accounts                      bm/empty
             :transfers                     bm/empty
             :errors                        bm/empty
+            :account-index                 bm/empty
             :account-code-index            bm/empty
             :account-ledger-index          bm/empty
             :account-user-data-index       bm/empty
+            :transfer-index                bm/empty
             :transfer-code-index           bm/empty
             :transfer-ledger-index         bm/empty
             :transfer-debit-index          bm/empty
