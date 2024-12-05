@@ -1324,6 +1324,10 @@
                   (ct-step [t10] [:ok]))]
     (is (consistent? model))
 
+    (testing "empty"
+      (is (consistent?
+            (qa-step init0 {} []))))
+
     (testing "everything"
       (is (consistent?
             (qa-step model
@@ -1389,6 +1393,10 @@
                   (ca-step [a1 a2 a3 a4 a5] [:ok :ok :ok :ok :ok])
                   (ct-step [t10 t11 t12 t13 t14] [:ok :ok :ok :ok :ok]))]
     (is (consistent? model))
+
+    (testing "empty"
+      (is (consistent?
+            (qt-step init0 {} []))))
 
     (testing "everything"
       (is (consistent?

@@ -1150,9 +1150,7 @@
         (bm-intersection (bm/get account-code-index code))
         ; If these constraints left us with the universe, fall back on the
         ; union of all ledgers
-        (or (reduce bm/union (bm/values account-ledger-index))
-            ; Oh, there's NOTHING
-            (bim/int-map))
+        (or (reduce bm/union (bim/int-map) (bm/values account-ledger-index)))
         ; Timestamp constraints
         (bim-slice timestamp-min timestamp-max)
         ; Linear scan
@@ -1192,9 +1190,9 @@
               (bm-intersection (bm/get transfer-code-index code))
               ; If these constraints left us with the universe, fall back
               ; on the union of all ledgers--there should be only a few.
-              (or (reduce bm/union (bm/values transfer-ledger-index))
-                  ; Oh, there's NOTHING
-                  (bim/int-map))
+              (or (reduce bm/union
+                          (bim/int-map)
+                          (bm/values transfer-ledger-index)))
               ; Timestamp constraints
               (bim-slice timestamp-min timestamp-max)
               ; Linear scan

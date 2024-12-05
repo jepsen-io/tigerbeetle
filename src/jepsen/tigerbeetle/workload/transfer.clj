@@ -105,21 +105,16 @@
 
   (invoke! [this test {:keys [f value] :as op}]
     (try+
-      (case f
-        :create-accounts
-        (merge op {:type :ok} (c/create-accounts! conn value))
-
-        :lookup-accounts
-        (merge op {:type :ok} (c/lookup-accounts conn value))
-
-        :create-transfers
-        (merge op {:type :ok} (c/create-transfers! conn value))
-
-        :lookup-transfers
-        (merge op {:type :ok} (c/lookup-transfers conn value))
-
-        :get-account-transfers
-        (merge op {:type :ok} (c/get-account-transfers conn value)))
+      (merge op
+             {:type :ok}
+             (case f
+               :create-accounts       (c/create-accounts! conn value)
+               :lookup-accounts       (c/lookup-accounts conn value)
+               :create-transfers      (c/create-transfers! conn value)
+               :lookup-transfers      (c/lookup-transfers conn value)
+               :query-accounts        (c/query-accounts conn value)
+               :query-transfers       (c/query-transfers conn value)
+               :get-account-transfers (c/get-account-transfers conn value)))
       (catch [:type :timeout] e
         (assoc op :type :info, :value nil, :error :timeout))))
 

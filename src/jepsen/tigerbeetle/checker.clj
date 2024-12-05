@@ -75,7 +75,11 @@
                   [util :refer [nanos->secs]]]
             [jepsen [checker :as checker]
                     [history :as h]]
-            [jepsen.tigerbeetle [explainer :as e]
+            [jepsen.tigerbeetle [core :refer [write-fs
+                                              read-fs
+                                              read-account-fs
+                                              read-transfer-fs]]
+                                [explainer :as e]
                                 [model :as model]]
             [tesser [core :as t]
                     [math :as tm]
@@ -135,30 +139,6 @@
      :combiner          bm/merge
      :post-combiner     b/forked}))
 
-(defn first-final-read
-  "Takes a history. Returns the offset of the first final read."
-  [history]
-  (loopr [i 0]
-         [op history]
-         (let [f (:f op)]
-           (if (or (identical? f :final-lookup-accounts)
-                   (identical? f :final-lookup-transfers))
-             i
-             (recur (inc i))))))
-
-(defn resolve-events-into-set
-  "Takes a Bifurcan set, a vector of ids, and a vector of values. Adds ids to
-  set if values are present."
-  [s ids values]
-  (loop [i 0
-         s s]
-    (if (= i (count ids))
-      s
-      (recur (inc i)
-             (if (nil? (nth values i))
-               s
-               (bs/add s (nth ids i)))))))
-
 (defn op->id->timestamp-map
   "Takes a single Operation whose :value is a collection of things (e.g.
   accounts) with :id and :timestamp fields. Returns a map of id->timestamp."
@@ -173,7 +153,7 @@
   observed accounts."
   [history]
   (->> (t/filter h/ok?)
-       (t/filter (h/has-f? #{:lookup-accounts :query-accounts}))
+       (t/filter (h/has-f? read-account-fs))
        (t/map op->id->timestamp-map)
        bmap-merge
        (h/tesser history)))
@@ -183,9 +163,7 @@
   observed transfers."
   [history]
   (->> (t/filter h/ok?)
-       (t/filter (h/has-f? #{:get-account-transfers
-                             :lookup-transfers
-                             :query-transfers}))
+       (t/filter (h/has-f? read-transfer-fs))
        (t/map op->id->timestamp-map)
        bmap-merge
        (h/tesser history)))
@@ -203,9 +181,7 @@
   transfer IDs."
   [history]
   (->> (t/filter h/ok?)
-       (t/filter (h/has-f? #{:get-account-transfers
-                             :lookup-transfers
-                             :query-transfers}))
+       (t/filter (h/has-f? read-transfer-fs))
        (t/map op->ids)
        bset-union
        (h/tesser history)))
@@ -215,7 +191,7 @@
   account IDs."
   [history]
   (->> (t/filter h/ok?)
-       (t/filter (h/has-f? #{:lookup-accounts :query-accounts}))
+       (t/filter (h/has-f? read-account-fs))
        (t/map op->ids)
        bset-union
        (h/tesser history)))
@@ -261,13 +237,13 @@
 
 (defn resolve-ops-infer-timestamp
   "Takes a history, a map of account IDs to timestamps, one for transfer IDs to
-  timestamps, and an :info operation. Returns nil if any write event appears in
-  those maps. If one does appear, returns the timestamp of the first observed
-  event. Empty writes and all reads return nil."
+  timestamps, and an :info operation. Returns nil if no written event was ever
+  read. If one was read, returns the timestamp of the first observed event.
+  Empty writes and all reads return nil."
   [history account-id->timestamp transfer-id->timestamp op]
   (when-let [; What map are we going to look in?
              id->ts (case (:f op)
-                      :create-accounts account-id->timestamp
+                      :create-accounts  account-id->timestamp
                       :create-transfers transfer-id->timestamp
                       nil)]
     (->> (h/invocation history op)
@@ -340,10 +316,9 @@
   (let [; A predicate of an op that tells us if it was a read of our desired
         ; type
         read-of-type?
-        (h/has-f?
-          (case type
-            :account  #{:lookup-accounts}
-            :transfer #{:lookup-transfers :get-account-transfers}))
+        (h/has-f? (case type
+                    :account  read-account-fs
+                    :transfer read-transfer-fs))
         ; Takes a completion op and returns a read in it of a specific
         ; account/transfer matching our ID, or nil if none is there, or it's of
         ; the wrong type.
@@ -397,31 +372,33 @@
    last-valid-read]
   (when err
     ; We have a model-checker error
-    (when (= :lookup-accounts (:f op'))
-      ; Which got stuck on a lookup-accounts op
-      (when-let [field (first (set/intersection
-                                (set (keys (:actual diff)))
-                                #{:credits-posted
-                                  :debits-posted}))]
-        ; And it's an explicable field! Let's ask the explainer using either
-        ; the resolved or original history
-        (let [value (get actual field)
-              opts  (assoc opts
-                           :op'             op'
-                           :account-id      id
-                           :field           field
-                           :value           value
-                           :last-valid-read last-valid-read)]
-          (or #_(e/explain (assoc opts
-                                :history resolved-history
-                                :op-types #{:ok :info}
-                                :additional-data {:history :resolved}))
-              #_(e/explain (assoc opts
-                                :op-types #{:ok :info}
-                                :additional-data {:history :original}))
-              (e/explain (assoc opts
-                                :op-types #{:ok :info :fail}
-                                :additional-data {:history :original}))))))))
+    (when (read-account-fs (:f op'))
+      ; Which got stuck on a read of an account
+      (when (map? (:actual diff))
+        ; And the diff is on a single account, rather than a vector
+        (when-let [field (first (set/intersection
+                                  (set (keys (:actual diff)))
+                                  #{:credits-posted
+                                    :debits-posted}))]
+          ; And it's an explicable field! Let's ask the explainer using either
+          ; the resolved or original history
+          (let [value (get actual field)
+                opts  (assoc opts
+                             :op'             op'
+                             :account-id      id
+                             :field           field
+                             :value           value
+                             :last-valid-read last-valid-read)]
+            (or (e/explain (assoc opts
+                                  :history resolved-history
+                                  :op-types #{:ok :info}
+                                  :additional-data {:history :resolved}))
+                (e/explain (assoc opts
+                                  :op-types #{:ok :info}
+                                  :additional-data {:history :original}))
+                (e/explain (assoc opts
+                                  :op-types #{:ok :info :fail}
+                                  :additional-data {:history :original})))))))))
 
 (defn model-check
   "Checks a sequence of OK operations from a history using our model checker.
@@ -444,12 +421,10 @@
                      ; If we had a bad read of a specific ID, try and trace it
                      ; to the last valid read.
                      id  (:id err)
-                     type (case (:f op)
-                            :lookup-transfers      :transfer
-                            :get-account-transfers :transfer
-                            :lookup-accounts       :account
-                            :create-accounts       nil
-                            :create-transfers      nil)
+                     type (condp contains? (:f op)
+                            read-account-fs :account
+                            read-transfer-fs :transfer
+                            nil)
                      last-valid-read
                      (when (and id type)
                        (model-check-last-valid-read
@@ -508,6 +483,18 @@
              (t/mapcat :value)
              t/frequencies)
 
+        query-accounts-lengths
+        (->> (t/filter (h/has-f? :query-accounts))
+             (t/map (comp count :value))
+             (tm/digest tq/hdr-histogram)
+             (t/post-combine quantiles))
+
+        query-transfers-lengths
+        (->> (t/filter (h/has-f? :query-transfers))
+             (t/map (comp count :value))
+             (tm/digest tq/hdr-histogram)
+             (t/post-combine quantiles))
+
         get-account-transfers-lengths
         (->> (t/filter (h/has-f? :get-account-transfers))
              (t/map (comp count :value))
@@ -519,10 +506,12 @@
              (t/fuse
                {:create-account-results        create-account-results
                 :create-transfer-results       create-transfer-results
+                :query-accounts-lengths        query-accounts-lengths
+                :query-transfers-lengths       query-transfers-lengths
                 :get-account-transfers-lengths get-account-transfers-lengths}))
 
         chain-lengths
-        (->> (t/filter (h/has-f? #{:create-accounts :create-transfers}))
+        (->> (t/filter (h/has-f? write-fs))
              (t/mapcat (fn [op]
                          (loopr [size  1
                                  sizes (transient [])]
@@ -633,18 +622,10 @@
   "Analyzes a history, gluing together all the various data structures we
   need."
   [history]
-  (let [;created-accounts (h/task history created-accounts []
-        ;                         (created-accounts history))
-        ;created-transfers (h/task history created-transfers []
-        ;                          (created-transfers history))
-        account-id->timestamp (h/task history account-id->timestamp []
+  (let [account-id->timestamp (h/task history account-id->timestamp []
                                       (account-id->timestamp history))
         transfer-id->timestamp (h/task history transfer-id->timestamp []
                                       (transfer-id->timestamp history))
-        ;seen-accounts  (h/task history seen-accounts []
-        ;                       (seen-accounts history))
-        ;seen-transfers (h/task history seen-transfers []
-        ;                       (seen-transfers history))
         resolved-history (h/task history resolve-ops
                                  [ait account-id->timestamp
                                   tit transfer-id->timestamp]
@@ -668,8 +649,7 @@
         errors (merge (sorted-map)
                       @model-check
                       (:anomalies @check-realtime)
-                      @check-duplicate-timestamps)
-        ]
+                      @check-duplicate-timestamps)]
     (merge errors
            {:stats @stats}
            (select-keys @check-realtime [:not :also-not])

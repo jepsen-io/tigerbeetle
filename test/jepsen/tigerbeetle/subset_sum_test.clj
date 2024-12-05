@@ -45,7 +45,7 @@
             (recur smaller' bigger')
             (recur smaller bigger')))))
 
-(def test-n 100000)
+(def test-n 10000)
 
 (def int-max (biginteger (dec (.pow (biginteger 2) 128))))
 

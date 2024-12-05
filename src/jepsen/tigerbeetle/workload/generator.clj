@@ -192,8 +192,13 @@
                         "Draws a vector of n transfers IDs that we might want
                         to look up.")
 
-  (gen-get-account-transfers [state]
-                             "Generates an account filter map for a get-account-transfers operation."))
+  (gen-query-filter [state]
+                    "Generates a query filter map for query-accounts or
+                    query-transfers.")
+
+  (gen-account-filter [state]
+                      "Generates an account filter map for a
+                      get-account-transfers operation."))
 
 (defrecord State
   [
@@ -330,7 +335,34 @@
          (take n)
          vec))
 
-  (gen-get-account-transfers [this]
+  (gen-query-filter [this]
+    (let [flags (cond-> #{}
+                  ; Mostly we want rcron; that way periodic reads will cover
+                  ; more of the space.
+                  (< (dg/double) 9/10) (conj :reversed))
+          ; A pair of timestamps for min and max
+          [t1 t2] (sort [(rand-timestamp this)
+                         (rand-timestamp this)])]
+      (cond-> {:flags flags
+               :limit (dg/long 1 32)}
+        (< (dg/double) 1/4)
+        (assoc :timestamp-min t1)
+
+        (< (dg/double) 1/4)
+        (assoc :timestamp-max t2)
+
+        (< (dg/double) 1/8)
+        (assoc :ledger (rand-ledger this))
+
+        ; These are relatively unlikely to match, so we generate them
+        ; infrequently.
+        (< (dg/double) 1/16)
+        (assoc :code (rand-code this))
+
+        (< (dg/double) 1/16)
+        (assoc :user-data (rand-user-data this)))))
+
+  (gen-account-filter [this]
     (let [flags (cond-> (condp < (dg/double)
                           ; Very rarely, neither credits nor debits
                           0.95 #{}
@@ -427,6 +459,13 @@
         [:ok :get-account-transfers]
         (GenContext. gen' (saw-transfers state value))
 
+        ; Queries tell us about accounts/transfers
+        [:ok :query-accounts]
+        (GenContext. gen' (saw-accounts state value))
+
+        [:ok :query-transfers]
+        (GenContext. gen' (saw-transfers state value))
+
         [_ _]
         this))))
 
@@ -468,11 +507,23 @@
   {:f       :lookup-transfers
    :value   (gen-lookup-transfers (:state ctx) (rand-event-count))})
 
+(defn query-accounts-gen
+  "A generator for query-accounts operations."
+  [test ctx]
+  {:f     :query-accounts
+   :value (gen-query-filter (:state ctx))})
+
+(defn query-transfers-gen
+  "A generator for query-transfers operations."
+  [test ctx]
+  {:f     :query-transfers
+   :value (gen-query-filter (:state ctx))})
+
 (defn get-account-transfers-gen
   "A generator for get-account-transfers operations."
   [test ctx]
   {:f       :get-account-transfers
-   :value   (gen-get-account-transfers (:state ctx))})
+   :value   (gen-account-filter (:state ctx))})
 
 (defn rand-weighted-index
   "Takes a total weight and a vector of weights for a weighted discrete
@@ -540,7 +591,9 @@
     100 create-transfers-gen
     20  lookup-accounts-gen
     20  lookup-transfers-gen
-    20  get-account-transfers-gen))
+    20  get-account-transfers-gen
+    20  query-accounts-gen
+    20  query-transfers-gen))
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"

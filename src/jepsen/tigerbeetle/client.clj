@@ -26,9 +26,10 @@
                             CreateTransferResult
                             CreateTransferResultBatch
                             IdBatch
-                            UInt128
+                            QueryFilter
                             TransferBatch
-                            TransferFlags)
+                            TransferFlags
+                            UInt128)
            (java.util Arrays)))
 
 ; Helpers
@@ -218,12 +219,29 @@
   (let [f (doto (AccountFilter.)
             (.setAccountId (bigint->bytes account-id))
             (.setCredits   (contains? flags :credits))
-            (.setDebits    (contains? flags :debits)))]
+            (.setDebits    (contains? flags :debits))
+            (.setReversed  (contains? flags :reversed)))]
     (when code                (.setCode f code))
     (when user-data           (.setUserData64 f user-data))
     (when timestamp-min       (.setTimestampMin f timestamp-min))
     (when timestamp-max       (.setTimestampMax f timestamp-max))
     (when limit               (.setLimit f limit))
+    f))
+
+(defn query-filter
+  "Constructs a QueryFIlter from a map."
+  [{:keys [code ledger limit flags timestamp-min timestamp-max user-data]
+    :as filter}]
+  (let [f (doto (QueryFilter.)
+            (.setReversed (contains? flags :reversed)))]
+    (when code          (.setCode f code))
+    (when ledger        (.setLedger f ledger))
+    (when user-data     (.setUserData64 f user-data))
+    (when timestamp-min (.setTimestampMin f timestamp-min))
+    (when timestamp-max (.setTimestampMax f timestamp-max))
+    (when limit         (.setLimit f limit))
+    (info :filter (datafy f))
+    (assert (= filter (select-keys (datafy f) (keys filter))))
     f))
 
 ; Deserialization
@@ -265,7 +283,18 @@
       (if-not (.next b)
         ; End of batch
         (persistent! accounts)
-        (recur (conj! accounts (account-batch-current->clj b)))))))
+        (recur (conj! accounts (account-batch-current->clj b))))))
+
+  QueryFilter
+  (datafy [f]
+    {:code          (.getCode f)
+     :ledger        (.getLedger f)
+     :limit         (.getLimit f)
+     :timestamp-min (.getTimestampMin f)
+     :timestamp-max (.getTimestampMax f)
+     :user-data     (.getUserData64 f)
+     :flags         (cond-> #{}
+                      (.getReversed f) (conj :reversed))}))
 
 (defn create-account-result-batch->clj
   "Converts a CreateAccountResultBatch to a Clojure vector. Also takes the
@@ -336,15 +365,17 @@
 (defn account-batch->clj
   "Converts an account batch to a Clojure vector. Takes the vector of IDs
   responsible for producing this response. Guarantees the result vector is 1:1
-  with the ID vector."
-  [ids ^AccountBatch res]
-  (mapv (partial bm/get (index-batch account-batch-current->clj res))
-        ids))
+  with the ID vector. With no IDs, just returns the response vector."
+  ([res]
+   (read-batch account-batch-current->clj res))
+  ([ids ^AccountBatch res]
+   (mapv (partial bm/get (index-batch account-batch-current->clj res))
+         ids)))
 
 (defn transfer-batch->clj
   "Converts a transfer batch to a CLojure vector. Optionally takes the vector
   of IDs responsible for producing this response. Guarantees the result vector
-  is 1:1 with the ID vector."
+  is 1:1 with the ID vector. With no IDs, just returns the response vector."
   ([res]
    (read-batch transfer-batch-current->clj res))
   ([ids res]
@@ -412,6 +443,20 @@
                      {:timestamp The server timestamp for this operation
                       :value     A vector of transfer maps.}")
 
+  (query-accounts [this filter]
+                  "Takes a client and a map representing a query filter.
+                  Returns
+
+                    {:timestamp The server timestamp for this operation
+                     :value     A vector of matching accounts}")
+
+  (query-transfers [this filter]
+                   "Takes a client and a map representing a query filter.
+                   Returns
+
+                     {:timestamp The server timestamp for this operation
+                      :value     A vector of matching transfers}")
+
   (get-account-transfers [this account-filter]
                          "Takes a client and a map representing an account
                          filter. Returns
@@ -432,41 +477,58 @@
       (throw+ {:type :timeout}))
     res))
 
+(defn with-timestamp
+  "Takes a response and a value extracted from that response. Returns a map of
+  the form
+
+    {:timestamp response-timestamp
+     :value     value}"
+  [^Batch response value]
+  {:timestamp (.getTimestamp (.getHeader response))
+   :value     value})
+
 (defrecord TrackingClient [^Client client, node, primary-tracker]
   IClient
   (create-accounts! [this accounts]
     (let [req (account-batch accounts)
           res (deref+ client (.createAccountsAsync client req))]
       (primary-tracker-write-completed! primary-tracker node)
-      {:timestamp (.getTimestamp (.getHeader res))
-       :value     (create-account-result-batch->clj req res)}))
+      (with-timestamp res (create-account-result-batch->clj req res))))
 
   (create-transfers! [this transfers]
     (let [req (transfer-batch transfers)
           res (deref+ client (.createTransfersAsync client req))]
       (primary-tracker-write-completed! primary-tracker node)
-      {:timestamp (.getTimestamp (.getHeader res))
-       :value     (create-transfer-result-batch->clj req res)}))
+      (with-timestamp res (create-transfer-result-batch->clj req res))))
 
   (lookup-accounts [this ids]
     (let [req (id-batch ids)
           res  (deref+ client (.lookupAccountsAsync client req))]
-      {:timestamp (.getTimestamp (.getHeader res))
-       :value     (account-batch->clj ids res)}))
+      (with-timestamp res (account-batch->clj ids res))))
 
   (lookup-transfers [this ids]
     (let [req (id-batch ids)
           res (deref+ client (.lookupTransfersAsync client req))]
-      {:timestamp (.getTimestamp (.getHeader res))
-       :value     (transfer-batch->clj ids res)}))
+      (with-timestamp res (transfer-batch->clj ids res))))
+
+  (query-accounts [this filter]
+    (let [req (query-filter filter)
+          res (deref+ client (.queryAccountsAsync client req))]
+      (with-timestamp res (account-batch->clj res))))
+
+  (query-transfers [this filter]
+    (let [req (query-filter filter)
+          res (deref+ client (.queryTransfersAsync client req))]
+      (with-timestamp res (transfer-batch->clj res))))
 
   (get-account-transfers [this filter]
-    (let [res (deref+ client (.getAccountTransfersAsync client (account-filter filter)))]
-      {:timestamp (.getTimestamp (.getHeader res))
-       :value     (transfer-batch->clj res)}))
+    (let [req (account-filter filter)
+          res (deref+ client (.getAccountTransfersAsync client req))]
+      (with-timestamp res
+        (transfer-batch->clj res))))
 
   (close! [this]
-    (.close client))
+          (.close client))
 
   java.lang.AutoCloseable
   (close [this]

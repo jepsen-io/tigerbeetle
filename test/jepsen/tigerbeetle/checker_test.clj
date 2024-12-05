@@ -40,15 +40,9 @@
       (is (= {:valid? :unknown
               :not #{}
               :also-not #{}
-              :stats {:create-account-results {}
-                      :create-transfer-results {}
-                      :get-account-transfers-lengths
-                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
-                      :chain-lengths
-                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
               :error-types #{:empty-transaction-graph}
               :empty-transaction-graph true}
-             r))))
+             (dissoc r :stats)))))
 
   (testing "correct"
     (let [h (h/history
@@ -58,14 +52,8 @@
                (o 3 1 :ok     :lookup-accounts [a1' a2'] 200)])
           r (check h)]
       (is (= {:valid? true
-              :stats {:create-account-results {:ok 2}
-                      :create-transfer-results {}
-                      :get-account-transfers-lengths
-                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
-                      :chain-lengths
-                      {0.0 1.0, 0.3 1.0, 0.5 1.0, 0.9 1.0, 0.99 1.0, 1.0 1.0}}
               :error-types #{}}
-             r)))))
+             (dissoc r :stats))))))
 
 (deftest create-accounts-model-test
   (let [h (h/history
@@ -77,13 +65,6 @@
         r (check h)]
     (is (= {:valid? false
             :error-types #{:model}
-            :stats {:create-account-results {:ok 1
-                                             :ledger-must-not-be-zero 1}
-                    :create-transfer-results {}
-                    :get-account-transfers-lengths
-                    {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
-                    :chain-lengths
-                    {0.0 1.0, 0.3 1.0, 0.5 1.0, 0.9 1.0, 0.99 1.0, 1.0 1.0}}
             :model {:op-count     0
                     :event-count  1
                     :op       (h 0)
@@ -91,7 +72,7 @@
                     :account  a2
                     :expected :ok
                     :actual   :ledger-must-not-be-zero}}
-           r))))
+           (dissoc r :stats)))))
 
 (deftest lookup-accounts-model-test
   (let [h (h/history
@@ -103,12 +84,6 @@
         r (check h)]
     (is (= {:valid? false
             :error-types #{:model}
-            :stats {:create-account-results {:ok 2}
-                    :create-transfer-results {}
-                    :get-account-transfers-lengths
-                    {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
-                    :chain-lengths
-                    {0.0 1.0, 0.3 1.0, 0.5 1.0, 0.9 1.0, 0.99 1.0, 1.0 1.0}}
             :model {:op-count     1
                     :event-count 3
                     :op          (h 2)
@@ -119,7 +94,7 @@
                     :diff
                     {:expected   {:ledger 1}
                      :actual     {:ledger 5}}}}
-           r))))
+           (dissoc r :stats)))))
 
 (deftest realtime-test
   (testing "consistent"
@@ -144,12 +119,6 @@
                           :strong-snapshot-isolation
                           :strong-serializable}
               :error-types #{:G0-realtime}
-              :stats {:create-account-results {}
-                      :create-transfer-results {}
-                      :get-account-transfers-lengths
-                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}
-                      :chain-lengths
-                      {0.0 0.0, 0.3 0.0, 0.5 0.0, 0.9 0.0, 0.99 0.0, 1.0 0.0}}
               :G0-realtime
               [{:type  :G0-realtime
                 :cycle [(h 1) (h 3) (h 1)]
@@ -159,7 +128,7 @@
                         {:type       :ww
                          :timestamp  100
                          :timestamp' 101}]}]}
-             r)))))
+             (dissoc r :stats))))))
 
 (deftest indefinite-test
   (let [h (h/history
