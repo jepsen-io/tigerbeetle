@@ -17,6 +17,17 @@
    :code i
    :flags #{}})
 
+(defn strip-account
+  "Strips off the timestamp and balances for an account. Helpful for
+  reconstructing real-world scenarios."
+  [account]
+  (dissoc account
+          :timestamp
+          :debits-pending
+          :debits-posted
+          :credits-pending
+          :credits-posted))
+
 ; A few simple events for playing around
 (def a1 (a 1))
 (def a2 (a 2))
@@ -1184,7 +1195,7 @@
       (is (consistent?
             (gat-step model
                       {:account-id 1N
-                       :flags #{:credits :debits :reverse}
+                       :flags #{:credits :debits :reversed}
                        :timestamp-min 211
                        :timestamp-max 213}
                       [t13' t12' t11']))))
@@ -1193,7 +1204,7 @@
       (is (consistent?
             (gat-step model
                       {:account-id 1N
-                       :flags #{:credits :debits :reverse}
+                       :flags #{:credits :debits :reversed}
                        :limit         2
                        :timestamp-min 211
                        :timestamp-max 213}
@@ -1353,13 +1364,16 @@
 
     (testing "reverse order"
       (is (consistent?
-            (qa-step model {:user-data 2, :flags #{:reverse}}
+            (qa-step model {:user-data 2}
+                     [a2' a3' a4'])))
+      (is (consistent?
+            (qa-step model {:user-data 2, :flags #{:reversed}}
                      [a4' a3' a2']))))
 
     (testing "limit"
       (is (consistent?
             (qa-step model
-                      {:flags         #{:reverse}
+                      {:flags         #{:reversed}
                        :limit         2
                        :timestamp-min 102
                        :timestamp-max 104}
@@ -1425,13 +1439,13 @@
       (is (consistent?
             (qt-step model
                       {:code 3
-                       :flags #{:reverse}}
+                       :flags #{:reversed}}
                       [t13' t12']))))
 
     (testing "limit"
       (is (consistent?
             (qt-step model
-                      {:flags         #{:reverse}
+                      {:flags         #{:reversed}
                        :limit         2
                        :timestamp-min 211
                        :timestamp-max 213}
@@ -1451,3 +1465,55 @@
                       {:user-data 12
                        :code      3}
                       [t12']))))))
+
+
+(deftest query-accounts-timestamp-weirdness-test
+  ; Tracks down a bug which caused us to return results in forward, not
+  ; reversed order. This turned out to be mis-spelling :reversed as
+  ; :reverse--the original tests catch this now, but I'm keeping this here as
+  ; an example of how to write a test from a real-world history.
+  (let [a1' {:debits-posted 491N,
+            :ledger 1,
+            :debits-pending 0N,
+            :credits-posted 49N,
+            :user-data 7,
+            :id 576N,
+            :code 1,
+            :credits-pending 0N,
+            :timestamp 1733357933139908529,
+            :flags #{}}
+        a2' {:debits-posted 49N,
+             :ledger 1,
+             :debits-pending 0N,
+             :credits-posted 491N,
+             :user-data 45,
+             :id 577N,
+             :code 98,
+             :credits-pending 0N,
+             :timestamp 1733357933139908530,
+             :flags #{}}
+        a1 (strip-account a1')
+        a2 (strip-account a2')
+        ; Transfers to explain balances
+        t10 (t 10 a1' a2' 491N)
+        t11 (t 11 a2' a1' 49N)
+        ; Timestamp maps
+        atsm (->> [a1' a2'] (map (juxt :id :timestamp)) (into {}) bm/from)
+        max-ts (reduce max (map :timestamp [a1' a2']))
+        ttsm (bm/from {10N (+ max-ts 1)
+                       11N (+ max-ts 2)})
+        ; Create world
+        init (init {:account-id->timestamp  atsm
+                    :transfer-id->timestamp ttsm})
+        model (-> init
+                  (ca-step [a1 a2] [:ok :ok])
+                  (ct-step [t10 t11] [:ok :ok])
+                  check-consistent)]
+    ; OK, now try to do a query on these accounts.
+    (is (consistent?
+          (qa-step model {:limit 28}
+                   [a1' a2'])))
+    ; And in reverse?
+    (is (consistent?
+          (qa-step model {:limit 28, :flags #{:reversed}}
+                   [a2' a1'])))))
