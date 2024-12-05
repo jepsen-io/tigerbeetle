@@ -75,8 +75,10 @@
 (defn test-name
   "Takes CLI options and constructs a test name as a string."
   [opts]
-  (str (:version opts)
-       " " (name (:workload opts))))
+  (str (or (:zip opts) (:version opts))
+       " " (name (:workload opts))
+       (when-let [n (:nemesis opts)]
+         (str " " (->> n (map name) sort (str/join ","))))))
 
 (defn tb-test
   "Takes CLI options and constructs a Jepsen test map"
