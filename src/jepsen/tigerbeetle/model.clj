@@ -36,6 +36,35 @@
 
 ;; Utilities
 
+(defn ^long error-map-priority
+  "Gives the preferred order of keys in error maps. Higher means later."
+  [k]
+  (case k
+    :type        0
+    :id          1
+    :account     2
+    :transfer    3
+    :filter      20
+    :expected    51
+    :actual      52
+    :diff        53
+    :op-count    80
+    :event-count 81
+    :op          100
+    :op'         101
+    1000))
+
+(defn error-map-compare
+  "Comparator for error maps."
+  [a b]
+  (compare (error-map-priority a) (error-map-priority b)))
+
+(defn error-map
+  "It's nice to have our error maps keep their keys in a particular order.
+  Turns any map into a sorted map by our preferred printing order."
+  [m]
+  (into (sorted-map-by error-map-compare) m))
+
 (defn first-not=-index
   "Takes two iterables and returns the index of the first mismatch between
   them, or nil if no mismatch."

@@ -417,7 +417,7 @@
            (let [op     (h/invocation history op')
                  model  (model/step model op op')]
              (if (model/inconsistent? model)
-               (let [err (into (sorted-map) model)
+               (let [err (model/error-map model)
                      ; If we had a bad read of a specific ID, try and trace it
                      ; to the last valid read.
                      id  (:id err)
