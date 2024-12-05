@@ -146,7 +146,8 @@
 
 (def cli-opts
   "Command-line option specification"
-  [
+  [[nil "--download-data" "Whether to download data files from nodes."]
+
    [nil "--final-time-limit SECONDS" "How long should we run the final generator for, at most? In seconds."
     :default  200
     :parse-fn read-string
