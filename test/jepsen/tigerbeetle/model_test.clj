@@ -75,6 +75,12 @@
     :pending-id        0N
     :timeout           0}))
 
+(defn strip-transfer
+  "Strips off the timestamp for a transfer. Helpful for
+  reconstructing real-world scenarios."
+  [transfer]
+  (dissoc transfer
+          :timestamp))
 (def ttsm
   "A simple map of ID->timestamp for transfers"
   (bm/from (zipmap (map bigint (range 0N 100N))
@@ -1454,10 +1460,18 @@
     (testing "code"
       (is (consistent?
             (qt-step model
-                      {:account-id 1N
-                       :flags #{:credits :debits}
-                       :code 3}
-                      [t12' t13']))))
+                      {:flags #{:reversed}
+                       :code 10}
+                      [t14' t10'])))
+      (is (consistent?
+            (qt-step model
+                      {:code 3}
+                      [t12' t13'])))
+
+      (is (consistent?
+            (qt-step model
+                     {:code 500}
+                     []))))
 
     (testing "user-data"
       (is (consistent?

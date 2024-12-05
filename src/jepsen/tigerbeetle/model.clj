@@ -57,7 +57,10 @@
 (defn error-map-compare
   "Comparator for error maps."
   [a b]
-  (compare (error-map-priority a) (error-map-priority b)))
+  (let [c (compare (error-map-priority a) (error-map-priority b))]
+    (if (zero? c)
+      (compare a b)
+      c)))
 
 (defn error-map
   "It's nice to have our error maps keep their keys in a particular order.
@@ -1200,8 +1203,10 @@
                                  limit
                                  flags]}]
     (-> nil
-        (bm-intersection (bm/get account-ledger-index ledger))
-        (bm-intersection (bm/get account-code-index code))
+        (bm-intersection (when ledger
+                           (bm/get account-ledger-index ledger (bim/int-map))))
+        (bm-intersection (when code
+                           (bm/get account-code-index code (bim/int-map))))
         ; If these constraints left us with the universe, fall back on the
         ; union of all ledgers
         (or (reduce bm/union (bim/int-map) (bm/values account-ledger-index)))
@@ -1239,21 +1244,23 @@
                                   timestamp-max
                                   limit
                                   flags]}]
-          (-> nil
-              (bm-intersection (bm/get transfer-ledger-index ledger))
-              (bm-intersection (bm/get transfer-code-index code))
-              ; If these constraints left us with the universe, fall back
-              ; on the union of all ledgers--there should be only a few.
-              (or (reduce bm/union
-                          (bim/int-map)
-                          (bm/values transfer-ledger-index)))
-              ; Timestamp constraints
-              (bim-slice timestamp-min timestamp-max)
-              ; Linear scan
-              (query-scan (partial read-transfer this)
-                          (has-user-data? user-data)
-                          limit
-                          (:reversed flags))))
+    (-> nil
+        (bm-intersection (when ledger
+                           (bm/get transfer-ledger-index ledger (bim/int-map))))
+        (bm-intersection (when code
+                           (bm/get transfer-code-index code (bim/int-map))))
+        ; If these constraints left us with the universe, fall back
+        ; on the union of all ledgers--there should be only a few.
+        (or (reduce bm/union
+                    (bim/int-map)
+                    (bm/values transfer-ledger-index)))
+        ; Timestamp constraints
+        (bim-slice timestamp-min timestamp-max)
+        ; Linear scan
+        (query-scan (partial read-transfer this)
+                    (has-user-data? user-data)
+                    limit
+                    (:reversed flags))))
 
   (query-transfers [this invoke ok]
     (let [filter   (:value invoke)
@@ -1286,16 +1293,13 @@
     (-> (cond-> (bim/int-map)
           (:debits flags)
           (bm-union (bm/get transfer-debit-index account-id))
-
           (:credits flags)
           (bm-union (bm/get transfer-credit-index account-id)))
-
         ; Restrict by code
-        (bm-intersection (bm/get transfer-code-index code))
-
+        (bm-intersection
+          (when code (bm/get transfer-code-index code (bim/int-map))))
         ; Restrict by timestamp
         (bim-slice timestamp-min timestamp-max)
-
         ; Linear scan
         (query-scan (partial read-transfer this)
                     (has-user-data? user-data)
