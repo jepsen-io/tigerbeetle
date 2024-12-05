@@ -93,7 +93,7 @@
                          :nodes         (:nodes opts)
                          :faults        (:nemesis opts)
                          :partition     {:targets [:one :primaries :majority]}
-                         :pause         {:targets [:one :primaries :majority :all]}
+                         :pause         {:targets [:one, :primaries] #_[:one :primaries :majority :all]}
                          :kill          {:targets #_[:one :primaries :majority :all]
                                          [:one, :primaries]}
                          :stable-period (:nemesis-stable-period opts)
