@@ -29,6 +29,7 @@
             [clojure [datafy :refer [datafy]]]
             [clojure.core.match :refer [match]]
             [clojure.data.generators :as dg]
+            [clojure.math.numeric-tower :refer [lcm]]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [generator :as gen]
                     [util :as util]]
@@ -568,6 +569,26 @@
                     (mapv #(gen/update % test ctx event) gens)
                     i))))
 
+(defn long-weights
+  "Takes an array of rational weights and scales them up such that all are
+  integers. Approximate for floats."
+  [weights]
+  (let [denom (fn denominator+ [x]
+                (cond (integer? x) 1
+                      (ratio? x) (denominator x)
+                      (float? x) (Math/round (/ x))))
+        m (->> weights
+               (map denom)
+               (reduce lcm 1))]
+    (mapv (fn scale [x]
+            (let [s (* m x)]
+              (cond (integer? s)  s
+                    (float? s)    (Math/round s)
+                    true          (throw (RuntimeException.
+                                           (str "How did we even get "
+                                                (class s) "x" (pr-str s)))))))
+          weights)))
+
 (defn weighted-mix
  "A generator which combines several generators in a random, weighted mixture.
  Takes a flat series of `weight gen` pairs: a generator with weight 6 is chosen
@@ -577,23 +598,35 @@
  (assert (even? (count weight-gens)))
  (when (seq weight-gens)
    (let [weight-gens  (partition 2 weight-gens)
-         weights      (mapv first weight-gens)
+         weights      (long-weights (map first weight-gens))
          total-weight (reduce + weights)
          gens         (mapv second weight-gens)]
      (WeightedMix. total-weight weights gens
                    (rand-weighted-index total-weight weights)))))
 
 (defn gen
-  "Generator of events during the main phase"
-  []
-  (weighted-mix
-    1   create-accounts-gen
-    100 create-transfers-gen
-    20  lookup-accounts-gen
-    20  lookup-transfers-gen
-    20  get-account-transfers-gen
-    20  query-accounts-gen
-    20  query-transfers-gen))
+  "Generator of events during the main phase. Takes two options:
+
+   :ta-ratio    The ratio of create-transfers to create-accounts
+   :rw-ratio    The ratio of reads to writes overall"
+  [{:keys [ta-ratio rw-ratio]}]
+  (let [; Weights for create-accounts and create-transfers
+        a 1
+        t (* ta-ratio a)
+        ; Weight of all writes
+        w (+ a t)
+        ; Weight of all reads
+        r (* rw-ratio w)
+        ; Split 5 ways
+        r- (/ r 5)]
+    (weighted-mix
+      a   create-accounts-gen
+      t   create-transfers-gen
+      r-  lookup-accounts-gen
+      r-  lookup-transfers-gen
+      r-  get-account-transfers-gen
+      r-  query-accounts-gen
+      r-  query-transfers-gen)))
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"

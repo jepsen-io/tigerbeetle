@@ -19,7 +19,7 @@
   :jvm-opts ["-server"
              "-XX:-OmitStackTraceInFastThrow"
              "-Djava.awt.headless=true"
-             "-Xmx24g"
+             "-Xmx64g"
              ]
   :test-selectors {:default (fn [m] true)
                    :all     (fn [m] true)

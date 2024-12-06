@@ -178,6 +178,16 @@
     :parse-fn read-string
     :validate [pos? "Must be a positive number."]]
 
+   [nil "--rw-ratio RATIO" "Ratio of reads to writes, e.g. 2/1"
+    :default  2
+    :parse-fn read-string
+    :validate [#(and (not (neg? %)) (rational? %)) "Must be a non-negative rational"]]
+
+   [nil "--ta-ratio RATIO" "Ratio of create-transfers to create-accounts, e.g. 100/1"
+    :default 100
+    :parse-fn read-string
+    :validate [#(and (not (neg? %)) (rational? %)) "Must be a non-negative rational."]]
+
    [nil "--tcpdump" "Dumps traffic to a pcap file."]
 
    [nil "--zip PATH" "Installs a local zip file, rather than downloading an official release."]

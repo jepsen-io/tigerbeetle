@@ -127,7 +127,7 @@
   "Takes CLI opts and constructs a partial test map."
   [opts]
   {:client          (Client. nil)
-   :generator       (gen)
+   :generator       (gen opts)
    :final-generator (final-gen)
    :wrap-generator  wrap-gen
    :checker         (tigerbeetle.checker/checker)})
