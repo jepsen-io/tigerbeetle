@@ -646,14 +646,21 @@
         long
         (* n))))
 
-(defn gen
-  "Main phase generator. We aim to have half of our processes performing reads
-  only, and half performing reads and writes."
+(defn split-rw-gen
+  "An experimental main phase generator. We aim to have half of our processes
+  performing reads only, and half performing reads and writes. This is only
+  useful if TigerBeetle has a write path that gets stuck when reads wouldn't.
+  Since right now reads go through the full consensus commit process, there's
+  no point to doing this."
   [opts]
   (let [c (:concurrency opts)
         n (count (:nodes opts))]
     (gen/reserve (rw-threads n c) (rw-gen opts)
                  (r-gen opts))))
+
+(def gen
+  "The main phase generator."
+  rw-gen)
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"
