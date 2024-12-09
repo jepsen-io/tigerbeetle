@@ -34,6 +34,14 @@
     :get-account-transfers
     :query-transfers})
 
+(def read-by-id-fs
+  "A set of :fs that read something by a vector of IDs."
+  #{:lookup-accounts, :lookup-transfers})
+
+(def read-by-predicate-fs
+  "A set of :fs that read by a predicate."
+  (set/difference read-fs read-by-id-fs))
+
 (def all-fs
   "All :fs we perform."
   (set/union write-fs read-fs))

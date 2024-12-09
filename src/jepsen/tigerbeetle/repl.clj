@@ -4,6 +4,7 @@
             [dom-top.core :refer [loopr]]
             [jepsen [history :as h]
                     [store :as store]]
+            [jepsen.tigerbeetle.core :refer :all]
             [tesser.core :as t]))
 
 (defn reads-of
@@ -13,13 +14,14 @@
   [id history]
   (assert (instance? clojure.lang.BigInt id)
           (str "Expected bigint ID, got " (pr-str id)))
+  (h/ensure-pair-index history)
   (->> (t/filter h/invoke?)
        (t/keep
          (fn per-op [op]
                  (let [op' (h/completion history op)]
-                   (case (:f op)
+                   (cond
                      ; Look at query
-                     (:lookup-accounts, :lookup-transfers)
+                     (read-by-id-fs (:f op))
                      (let [i (loopr [i 0]
                                     [id2 (:value op)]
                                     (if (= id id2)
@@ -31,7 +33,7 @@
                               (update op' :value nth i)]))
 
                      ; Look at results
-                     (:get-account-transfers)
+                     (read-by-predicate-fs (:f op))
                      (let [i (loopr [i 0]
                                     [event (:value op')]
                                     (if (= id (:id event))
@@ -42,6 +44,7 @@
                          [op
                           (update op' :value nth i)]))
 
+                     true
                      nil))))
        (t/into [])
        (h/tesser history)))
