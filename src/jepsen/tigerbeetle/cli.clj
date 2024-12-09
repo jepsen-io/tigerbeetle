@@ -116,7 +116,7 @@
                     (gen/phases
                       generator
                       (gen/log "Waiting for recovery")
-                      (gen/sleep 0)
+                      (gen/sleep 1)
                       (gen/time-limit (:final-time-limit opts)
                                       (gen/clients fg)))
                     generator)

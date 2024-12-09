@@ -32,6 +32,7 @@
             [clojure.math.numeric-tower :refer [lcm]]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [generator :as gen]
+                    [history :as h]
                     [util :as util]]
             [potemkin :refer [definterface+]]))
 
@@ -632,6 +633,29 @@
   "Roughly how many things do we try to read per final read?"
   128)
 
+(defrecord FinalReadGen [f      ; f for emitted ops
+                         ; Bifurcan map of first id in chunk to a vector of IDs
+                         chunks]
+  gen/Generator
+  (op [this test ctx]
+    (when (pos? (b/size chunks))
+      ; Pick a random pending chunk
+      (let [i    (rand-int (b/size chunks))
+            pair (b/nth chunks i)]
+        [(gen/fill-in-op
+           {:f f, :value (bm/value pair), :chunk-id (bm/key pair)}
+           ctx)
+         this])))
+
+  (update [this test ctx op]
+    ; Every time we perform an OK read of a chunk-id, clear it from our pending
+    ; chunks.
+    (if (and (h/ok? op)
+             (= f (:f op))
+             (:chunk-id op))
+      (update this :chunks bm/remove (:chunk-id op))
+      this)))
+
 (defn final-*-gen
   "Shared logic for both final read generators."
   [unseen-field f]
@@ -639,11 +663,12 @@
     (op [this test ctx]
       (gen/op
         (->> (get (:state ctx) unseen-field)
+             sort
              (partition-all 128)
-             (map (fn [ids]
-                    (gen/until-ok
-                      (gen/repeat
-                        {:f f, :value (vec ids)})))))
+             (reduce (fn [m chunk]
+                       (bm/put m (first chunk) (vec chunk)))
+                     bm/empty)
+             (FinalReadGen. f))
         test
         ctx))
 
