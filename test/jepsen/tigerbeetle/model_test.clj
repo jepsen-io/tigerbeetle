@@ -469,6 +469,37 @@
                              :flags #{:imported})]
                      [:imported-event-timestamp-must-not-regress])))))
 
+(deftest create-account-speculative-test
+  ; We evaluate an op where some of its events are unobserved; these event
+  ; should fail, and that's fine. Only account 3 is observed.
+  (let [atsm (bm/from {3N 103})
+        model (init {:account-id->timestamp   atsm
+                    :transfer-id->timestamp  ttsm})]
+    (is (consistent?
+          (ca-step model
+                   [(assoc a1 :flags #{:linked}) ; Speculative
+                    (assoc a2 :ledger 0)         ; Fails, causing rollback
+                    a3]                          ; Applied
+                   :unknown)))
+    ; But if we unlink a1, its speculative execution leaks into the resulting
+    ; state, causing the model to become invalid.
+    (let [a2 (assoc a2 :ledger 0)]
+      (is (= (inconsistent
+               {:type        :speculative-account
+                :op          {:f :create-accounts, :value [a1 a2 a3]}
+                :op'         {:f :create-accounts, :value :unknown}
+                :op-count    0
+                :event-count 3
+                :account     (assoc a1
+                                    :speculative?    true
+                                    :timestamp       0 ; Speculatively assigned
+                                    :credits-pending 0N
+                                    :credits-posted  0N
+                                    :debits-pending  0N
+                                    :debits-posted   0N)
+                :result      :ok})
+            (ca-step model [a1 a2 a3] :unknown))))))
+
 ; When we execute a failed chain, events are going to succeed but be missing
 ; timestamps. We need to be OK with speculatively executing those events!
 (deftest create-account-chain-with-missing-timestamp
@@ -1073,7 +1104,7 @@
 ; When we execute a failed chain, events are going to succeed but be missing
 ; timestamps. We need to be OK with speculatively executing those events!
 (deftest create-transfer-chain-with-missing-timestamp
-  (let [model (init {:account-id->timestamp bm/empty
+  (let [model (init {:account-id->timestamp  atsm
                      :transfer-id->timestamp bm/empty})]
     (is (consistent?
           (-> model
@@ -1082,6 +1113,39 @@
                         (t 11 a1 a1 1N)]
                    [:linked-event-failed
                     :accounts-must-be-different]))))))
+
+(deftest create-transfer-speculative-test
+  ; We evaluate an op where some of its transfers are unobserved. These events
+  ; should fail, and that's fine. Only transfer 3 is observed.
+  (let [ttsm (bm/from {13N 203})
+        model (-> (init {:account-id->timestamp   atsm
+                         :transfer-id->timestamp  ttsm})
+                  (ca-step [a1 a2] [:ok :ok]))
+        t11 (t 11N a1 a2 2N)                    ; Speculative
+        t12 (assoc (t 12N a1 a2 4N) :ledger 0)  ; Fails
+        t13 (t 13N a1 a2 8N)]                   ; OK
+    ; If we link t11 to t12, it executes speculatively, is rolled back, and all
+    ; is well
+    (is (consistent?
+          (ct-step model
+                   [(assoc t11 :flags #{:linked})
+                    t12
+                    t13]
+                   :unknown)))
+    ; But if we don't link t11, its speculative execution leaks into the
+    ; resulting state, causing the model to become invalid.
+    (is (= (inconsistent
+             {:type        :speculative-transfer
+              :op          {:f :create-transfers, :value [t11 t12 t13]}
+              :op'         {:f :create-transfers, :value :unknown}
+              :op-count    1
+              :event-count 5
+              :transfer    (assoc t11
+                                  :speculative?    true
+                                  :timestamp       103 ; Speculatively assigned
+                                  )
+              :result      :ok})
+           (ct-step model [t11 t12 t13] :unknown)))))
 
 (deftest exceeds-credits-test
   (let [a1 (update a1 :flags conj :debits-must-not-exceed-credits)]

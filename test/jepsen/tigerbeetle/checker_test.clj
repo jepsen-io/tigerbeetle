@@ -172,9 +172,8 @@
 
 (deftest explainer-test
   (let [h (h/history
-            ; We perform two writes that crash. Note that we have no explicit
-            ; timestamps here.
-            [(o 0 0 :invoke :create-accounts [a1 a2])
+            [; This crashes, but that's fine: we read a1 and a2 later
+             (o 0 0 :invoke :create-accounts [a1 a2])
              (o 1 0 :info   :create-accounts nil)
              ; A crashed op with two transfers, only one of which is applied
              (o 2 1 :invoke :create-transfers [(t 10N a1 a2 5N)
@@ -191,7 +190,10 @@
              (o 11 3 :ok     :lookup-transfers [nil nil nil (tts (t 13N a1 a2 10N))] 501)
              ; But an *account* read sees 10, 12, and 13
              (o 12 4 :invoke :lookup-accounts [1N])
-             (o 13 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 17N)] 502)])
+             (o 13 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 17N)] 502)
+             ; A read of A2, just so we know it exists
+             (o 14 5 :invoke :lookup-accounts [2N])
+             (o 15 5 :ok     :lookup-accounts [(assoc a2' :credits-posted 17N)] 503)])
         r (check h)]
     (is (not (:valid? r)))
     ; We have a model error
@@ -229,8 +231,12 @@
              (o 6 2 :invoke :create-transfers [(t 11N a1 a2 2N)])
              (o 7 2 :fail   :create-transfers nil)
              ; And an account read illegally reflects it!
-             (o 8 4 :invoke :lookup-accounts [1N])
-             (o 9 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 7N)] 213)])
+             (o 8 4 :invoke :lookup-accounts [1N 2N])
+             (o 9 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 7N)
+                                              (assoc a2' :credits-posted 7N)] 213)
+             ; We need a transfer read to get the timestamp for t10
+             (o 10 5 :invoke :lookup-transfers [10N])
+             (o 11 5 :ok     :lookup-transfers [(tts (t 10N a1 a2 5N))] 500)])
         r (check h)]
     (is (not (:valid? r)))
     ; We have a model error
@@ -252,6 +258,6 @@
             :explanation
             {:history      :original
              :op-types     #{:ok :info :fail}
-             ; HERE: we need to update the explainer to start from the last valid read.
+             ; We start from the last valid read
              :solution     [{:id 11N, :op-index 6, :amount 2N, :type :fail, :result nil, :applied? true, :timestamp nil}]}}
            (:model r)))))

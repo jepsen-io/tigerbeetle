@@ -402,31 +402,59 @@
   vector of events, a Bifurcan list of expected results, and a vector of actual
   results. Returns model if the results match, or an inconsistent state.
 
+  If the model has a speculative error, returns an invalid state.
+
   The special `actual` value :unknown indicates that we don't know what the
   client returned, and that we should allow any results."
   [model invoke ok event-name events expected actual]
-  (if (identical? :unknown actual)
-    model
-    (if-let [i (first-not=-index expected actual)]
-      (if (not= (b/size expected) (count actual))
-        (inconsistent
-          {:type           :model
-           :op-count       (:op-count model)
-           :event-count    (- (:event-count model) (- (count events) i))
-           :expected       (datafy expected)
-           :actual         actual
-           :expected-count (b/size expected)
-           :actual-count   (count actual)})
-        (inconsistent
-          ; We have to unwind the event-count here, because our apply-chain
-          ; logic advances it either way.
-          {:type        :model
-           :op-count    (:op-count model)
-           :event-count (- (:event-count model) (- (count events) i))
-           event-name   (nth events i)
-           :expected    (b/nth expected i)
-           :actual      (nth actual i)}))
-      model)))
+  ; First, check integrity of results
+  (or (when (not (identical? :unknown actual))
+        ; We know what actually happened; did it differ?
+        (when-let [i (first-not=-index expected actual)]
+          ; Unexpected result
+          (if (not= (b/size expected) (count actual))
+            ; Wrong number of results
+            (inconsistent
+              {:type           :model
+               :op-count       (:op-count model)
+               :event-count    (- (:event-count model) (- (count events) i))
+               :expected       (datafy expected)
+               :actual         actual
+               :expected-count (b/size expected)
+               :actual-count   (count actual)})
+            ; Same number, wrong element
+            (inconsistent
+              ; We have to unwind the event-count here, because our
+              ; apply-chain logic advances it either way.
+              {:type        :model
+               :op-count    (:op-count model)
+               :event-count (- (:event-count model) (- (count events) i))
+               event-name   (nth events i)
+               :expected    (b/nth expected i)
+               :actual      (nth actual i)}))))
+      ; What about a speculative error?
+      (when-let [err (:speculative-error model)]
+        (let [; Find the corresponding result
+              event (:event err)
+              id (:id event)
+              i (loopr [i 0]
+                       [event events]
+                       (if (= id (:id event))
+                         i
+                         (recur (inc i)))
+                       nil)
+              _ (assert i)
+              result (b/nth expected i)]
+          (inconsistent
+            (-> err
+                ; We rename :event to :transfer or :account
+                (dissoc :event)
+                (assoc event-name event
+                       :result      result
+                       :op-count    (:op-count model)
+                       :event-count (:event-count model))))))
+      ; All good!
+      model))
 
 (defn create-helper
   "Common logic for create-transfers and create-accounts. Takes a model, an
@@ -671,8 +699,18 @@
    ^long transfer-timestamp ; The last transfer timestamp created
    accounts  ; A map of account IDs to accounts
    transfers ; A map of transfer IDs to transfers
-   errors    ; A map of permanent errors (TigerBeetle calls these *transient*
+
+   ; A map of permanent errors (TigerBeetle calls these *transient*
    ; errors, but they persist forever)
+   errors
+
+   ; A partial invalid map representing the first speculative event that was
+   ; applied to a model. Speculative events occur if we believe at least one
+   ; event in an op occurred, but others are unobserved and have no timestamp.
+   ; We execute those unobserved events anyway, assuming that they must fail by
+   ; the end of the operation. If this is present after an operation, the DB is
+   ; invalid.
+   speculative-error
 
    ; Indices for accounts
    account-index
@@ -828,19 +866,24 @@
                               :credits-posted 0N
                               :debits-pending 0N
                               :debits-posted 0N
-                              :timestamp ts)]
+                              :timestamp ts)
+               ; Remember the first speculative event
+               speculative-error' (or speculative-error
+                                      (when speculative?
+                                        {:type    :speculative-account
+                                         :event   account}))]
           (assoc this'
-                 :accounts    (bm/put accounts id account)
-                 :account-index      (update-secondary-index
-                                       account-index true account)
-                 :account-code-index (update-secondary-index
-                                       account-code-index code account)
-                 :account-ledger-index (update-secondary-index
-                                         account-ledger-index ledger account)
+                 :accounts              (bm/put accounts id account)
+                 :speculative-error     speculative-error'
+                 :account-index         (update-secondary-index
+                                          account-index true account)
+                 :account-code-index    (update-secondary-index
+                                          account-code-index code account)
+                 :account-ledger-index  (update-secondary-index
+                                          account-ledger-index ledger account)
                  :account-user-data-index
                  (update-secondary-index
                    account-user-data-index user-data account))))))
-
 
   (create-transfer [this transfer import?]
     ; See https://docs.tigerbeetle.com/reference/requests/create_transfers
@@ -1106,6 +1149,12 @@
                         ; Nothing pending
                         transfers')
 
+           ; Record speculative error
+           speculative-error' (or speculative-error
+                                  (when     speculative?
+                                    {:type  :speculative-transfer
+                                     :event transfer}))
+
            ; Update secondary indices
            transfer-index'
            (update-secondary-index transfer-index true transfer)
@@ -1140,6 +1189,7 @@
       (assoc this'
              :accounts                 accounts'
              :transfers                transfers'
+             :speculative-error        speculative-error'
              :transfer-index           transfer-index'
              :transfer-debit-index     transfer-debit-index'
              :transfer-credit-index    transfer-credit-index'
@@ -1392,6 +1442,7 @@
             :accounts                      bm/empty
             :transfers                     bm/empty
             :errors                        bm/empty
+            :speculative-error             nil
             :account-index                 bm/empty
             :account-code-index            bm/empty
             :account-ledger-index          bm/empty
