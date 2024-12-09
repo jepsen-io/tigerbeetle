@@ -605,35 +605,61 @@
      (WeightedMix. total-weight weights gens
                    (rand-weighted-index total-weight weights)))))
 
-(defn gen
-  "Generator of events during the main phase. Takes two options:
+(defn r-gen
+  "Generator purely of read operations during the main phase."
+  [{:keys [fs] :as opts}]
+  (weighted-mix
+    1  (when (:lookup-accounts fs)       lookup-accounts-gen)
+    1  (when (:lookup-transfers fs)      lookup-transfers-gen)
+    1  (when (:get-account-transfers fs) get-account-transfers-gen)
+    1  (when (:query-accounts fs)        query-accounts-gen)
+    1  (when (:query-transfers fs)       query-transfers-gen)))
+
+(defn rw-gen
+  "Generator of read and write events during the main phase. Takes two options:
 
    :ta-ratio    The ratio of create-transfers to create-accounts
    :rw-ratio    The ratio of reads to writes overall"
-  [{:keys [ta-ratio rw-ratio fs]}]
+  [{:keys [ta-ratio rw-ratio fs] :as opts}]
   (let [; Weights for create-accounts and create-transfers
         a 1
         t (* ta-ratio a)
         ; Weight of all writes
         w (+ a t)
         ; Weight of all reads
-        r (* rw-ratio w)
-        ; Split 5 ways
-        r- (/ r 5)]
+        r (* rw-ratio w)]
     (weighted-mix
       a   (when (:create-accounts fs)       create-accounts-gen)
       t   (when (:create-transfers fs)      create-transfers-gen)
-      r-  (when (:lookup-accounts fs)       lookup-accounts-gen)
-      r-  (when (:lookup-transfers fs)      lookup-transfers-gen)
-      r-  (when (:get-account-transfers fs) get-account-transfers-gen)
-      r-  (when (:query-accounts fs)        query-accounts-gen)
-      r-  (when (:query-transfers fs)       query-transfers-gen))))
+      r   (r-gen opts))))
+
+(defn rw-threads
+  "Given n nodes and c threads, how many threads should do reads *and* writes?"
+  [n c]
+  (assert (pos? n))
+  (assert (pos? c))
+  (if (< c n)
+    c
+    (-> (quot c n)
+        (/ 2)
+        Math/ceil
+        long
+        (* n))))
+
+(defn gen
+  "Main phase generator. We aim to have half of our processes performing reads
+  only, and half performing reads and writes."
+  [opts]
+  (let [c (:concurrency opts)
+        n (count (:nodes opts))]
+    (gen/reserve (rw-threads n c) (rw-gen opts)
+                 (r-gen opts))))
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"
   128)
 
-(defrecord FinalReadGen [f      ; f for emitted ops
+(defrecord FinalReadGen [f ; f for emitted ops
                          ; Bifurcan map of first id in chunk to a vector of IDs
                          chunks]
   gen/Generator

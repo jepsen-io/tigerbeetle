@@ -184,8 +184,8 @@
     :parse-fn (comp set parse-comma-kws)
     :validate [(partial every? all-fs) (cli/one-of all-fs)]]
 
-   [nil "--rw-ratio RATIO" "Ratio of reads to writes, e.g. 2/1"
-    :default  2
+   [nil "--rw-ratio RATIO" "Ratio of reads to writes performed by read-write processes, e.g. 2/1"
+    :default  1
     :parse-fn read-string
     :validate [#(and (not (neg? %)) (rational? %)) "Must be a non-negative rational"]]
 
