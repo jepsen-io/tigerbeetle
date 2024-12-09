@@ -609,7 +609,7 @@
 
    :ta-ratio    The ratio of create-transfers to create-accounts
    :rw-ratio    The ratio of reads to writes overall"
-  [{:keys [ta-ratio rw-ratio]}]
+  [{:keys [ta-ratio rw-ratio fs]}]
   (let [; Weights for create-accounts and create-transfers
         a 1
         t (* ta-ratio a)
@@ -620,13 +620,13 @@
         ; Split 5 ways
         r- (/ r 5)]
     (weighted-mix
-      a   create-accounts-gen
-      t   create-transfers-gen
-      r-  lookup-accounts-gen
-      r-  lookup-transfers-gen
-      r-  get-account-transfers-gen
-      r-  query-accounts-gen
-      r-  query-transfers-gen)))
+      a   (when (:create-accounts fs)       create-accounts-gen)
+      t   (when (:create-transfers fs)      create-transfers-gen)
+      r-  (when (:lookup-accounts fs)       lookup-accounts-gen)
+      r-  (when (:lookup-transfers fs)      lookup-transfers-gen)
+      r-  (when (:get-account-transfers fs) get-account-transfers-gen)
+      r-  (when (:query-accounts fs)        query-accounts-gen)
+      r-  (when (:query-transfers fs)       query-transfers-gen))))
 
 (def final-gen-chunk-size
   "Roughly how many things do we try to read per final read?"

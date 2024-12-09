@@ -12,6 +12,7 @@
                     [util :as util]]
             [jepsen.control.scp :as scp]
             [jepsen.tigerbeetle [client :as client]
+                                [core :refer [all-fs]]
                                 [db :as db]
                                 [nemesis :as nemesis]]
             [jepsen.tigerbeetle.workload [transfer :as transfer]]
@@ -177,6 +178,11 @@
     :default 10000
     :parse-fn read-string
     :validate [pos? "Must be a positive number."]]
+
+   [nil "--fs FUNS" "A comma-separated list of API functions (e.g. query-transfers,create-accounts) that we should run."
+    :default all-fs
+    :parse-fn (comp set parse-comma-kws)
+    :validate [(partial every? all-fs) (cli/one-of all-fs)]]
 
    [nil "--rw-ratio RATIO" "Ratio of reads to writes, e.g. 2/1"
     :default  2

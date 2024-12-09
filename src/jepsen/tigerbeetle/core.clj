@@ -1,5 +1,6 @@
 (ns jepsen.tigerbeetle.core
-  "Common utilities")
+  "Common utilities"
+  (:require [clojure [set :as set]]))
 
 (def cluster-id
   "The TigerBeetle cluster ID"
@@ -33,3 +34,6 @@
     :get-account-transfers
     :query-transfers})
 
+(def all-fs
+  "All :fs we perform."
+  (set/union write-fs read-fs))
