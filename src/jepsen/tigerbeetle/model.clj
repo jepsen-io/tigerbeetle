@@ -1,4 +1,4 @@
-(ns jepsen.tigerbeetle.model
+ns jepsen.tigerbeetle.model
   "A state machine model of TigerBeetle's semantics.
 
   ## Timestamps
@@ -972,15 +972,15 @@
                  (not (:pending (:flags pending)))
                  (return :pending-transfer-not-pending)
 
-                 (and (not= credit-account-id 0)
-                      (not= credit-account-id
-                            (:credit-account-id pending)))
-                 (return :pending-transfer-has-different-credit-account-id)
-
                  (and (not= debit-account-id 0)
                       (not= debit-account-id
                             (:debit-account-id pending)))
                  (return :pending-transfer-has-different-debit-account-id)
+
+                 (and (not= credit-account-id 0)
+                      (not= credit-account-id
+                            (:credit-account-id pending)))
+                 (return :pending-transfer-has-different-credit-account-id)
 
                  (and (not= ledger 0)
                       (not= ledger (:ledger pending)))
