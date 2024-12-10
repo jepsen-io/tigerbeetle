@@ -1,6 +1,7 @@
 (ns jepsen.tigerbeetle.core
   "Common utilities"
-  (:require [clojure [set :as set]]))
+  (:require [clojure [set :as set]]
+            [dom-top.core :refer [loopr]]))
 
 (def cluster-id
   "The TigerBeetle cluster ID"
@@ -45,3 +46,14 @@
 (def all-fs
   "All :fs we perform."
   (set/union write-fs read-fs))
+
+(defn bireduce
+  "Reduces over two vectors in parallel, given a function (f accumulator x y),
+  an initial accumulator, and two vectors xs and ys."
+  [f init xs ys]
+  (loopr [i   0
+          acc init]
+         [x xs]
+         (recur (inc i)
+                (f acc x (nth ys i)))
+         acc))

@@ -163,7 +163,7 @@
              (.setLedger ledger)
              (.setCode code)
              (.setFlags (account-flags->int flags))
-             ;(.setTimestamp timestamp))
+             (.setTimestamp (or timestamp 0))
              ))))
 
 (defn transfer-batch

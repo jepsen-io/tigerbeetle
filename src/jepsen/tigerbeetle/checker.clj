@@ -75,7 +75,8 @@
                   [util :refer [nanos->secs]]]
             [jepsen [checker :as checker]
                     [history :as h]]
-            [jepsen.tigerbeetle [core :refer [write-fs
+            [jepsen.tigerbeetle [core :refer [bireduce
+                                              write-fs
                                               read-fs
                                               read-account-fs
                                               read-transfer-fs]]
@@ -451,19 +452,33 @@
 (defn stats
   "Folds over the history, gathering basic statistics. We return:
 
-    {:create-transfer-results     A map of result frequencies for
-                                  create-transfers
-     :create-account-results      A map of result frequencies for
-                                  create-accounts
-     :get-account-transfer-lengths A quantile distribution of the lengths of
-                                   get-account-transfers. Helpful for tuning
-                                   generators so we actually do queries that
-                                   return something.
-     :chain-lengths                A quantile distribution of the lengths
-                                   of chains across create-account and
-                                   -transfer ops.
+    {:create-account-results        A map of result frequencies for
+                                    create-accounts
+     :create-transfer-results       A map of result frequencies for
+                                    create-transfers
+     :pending-transfer-results      Above, but restricted to just pending
+                                    transfers
+     :post-transfer-results         Above, but restricted to just
+                                    post-pending-transfers
+     :void-transfer-results         Above, but restricted to just
+                                    void-pending-transfers
+     :query-accounts-lengths        A quantile distribution of the lengths of
+                                    query-accounts results.
+     :query-transfers-lengths       A quantile distribution of the lengths of
+                                    query-transfers results.
+     :get-account-transfers-lengths A quantile distribution of the lengths of
+                                    get-account-transfers. Helpful for tuning
+                                    generators so we actually do queries that
+                                    return something.
+     :chain-lengths                 A quantile distribution of the lengths
+                                    of chains across create-account and
+                                    -transfer ops.
      }"
   [history]
+  ; Ugh, hack around a race condition in sparse histories deadlocking on
+  ; get-index
+  (when (seq history) (h/get-index history 0))
+  (h/ensure-pair-index history)
   (let [quantiles (fn [d]
                     (sorted-map
                       0.0  (tq/quantile d 0)
@@ -473,15 +488,35 @@
                       0.99 (tq/quantile d 0.99)
                       1.0  (tq/quantile d 1)))
 
-        create-account-results
+        create-accounts-results
         (->> (t/filter (h/has-f? :create-accounts))
              (t/mapcat :value)
              t/frequencies)
 
-        create-transfer-results
+        create-transfers-results
         (->> (t/filter (h/has-f? :create-transfers))
              (t/mapcat :value)
              t/frequencies)
+
+        ; Generic fold for transfer results restricted to one flag.
+        *-transfers-results
+        (fn [flag]
+          (->> (t/filter (h/has-f? :create-transfers))
+               (t/mapcat (fn [op']
+                           (persistent!
+                             (bireduce
+                               (fn [out transfer result]
+                                 (if (contains? (:flags transfer) flag)
+                                   (conj! out result)
+                                   out))
+                               (transient [])
+                               (:value (h/invocation history op'))
+                               (:value op')))))
+               t/frequencies))
+
+        pending-transfers-results (*-transfers-results :pending)
+        post-transfers-results    (*-transfers-results :post-pending-transfer)
+        void-transfers-results    (*-transfers-results :void-pending-transfer)
 
         query-accounts-lengths
         (->> (t/filter (h/has-f? :query-accounts))
@@ -504,8 +539,11 @@
         ok-fold
         (->> (t/filter h/ok?)
              (t/fuse
-               {:create-account-results        create-account-results
-                :create-transfer-results       create-transfer-results
+               {:create-accounts-results       create-accounts-results
+                :create-transfers-results      create-transfers-results
+                :pending-transfers-results     pending-transfers-results
+                :post-transfers-results        post-transfers-results
+                :void-transfers-results        void-transfers-results
                 :query-accounts-lengths        query-accounts-lengths
                 :query-transfers-lengths       query-transfers-lengths
                 :get-account-transfers-lengths get-account-transfers-lengths}))
