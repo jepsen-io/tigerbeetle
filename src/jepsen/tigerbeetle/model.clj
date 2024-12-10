@@ -1004,6 +1004,11 @@
                  (= :voided (:state pending))
                  (return :pending-transfer-already-voided)
                  ))
+           ; When voiding a transfer, we always use the original transfer
+           ; amount.
+           amount (if void?
+                    (:amount pending)
+                    amount)
 
            _ (when (not pending)
                (cond
@@ -1022,6 +1027,8 @@
                  (< 0 (:timeout transfer 0))
                  (return :timeout-reserved-for-pending-transfer)))
 
+           code              (or (:code pending)
+                                 code)
            ; Check credit/debit IDs
            credit-account-id (or (:credit-account-id pending)
                                  credit-account-id)
@@ -1131,6 +1138,7 @@
            ; Fill in transfer
            transfer (assoc transfer
                            :timestamp         ts
+                           :code              code
                            :amount            amount'
                            :debit-account-id  debit-account-id
                            :credit-account-id credit-account-id

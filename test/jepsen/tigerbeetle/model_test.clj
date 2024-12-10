@@ -611,9 +611,42 @@
                (datafy (:accounts m))))
         (is (= {1N (assoc (tts pending) :state :voided)
                 3N (assoc (tts void)
+                          :amount            10N
                           :debit-account-id  1N
                           :credit-account-id 2N)}
                (datafy (:transfers m))))))))
+
+(deftest two-phase-transfer-blank-amount-test
+  ; When we post or void a transfer using 0 amounts, there's a difference.
+  ; Posting 0 gets amount 0, but voiding 0 gets the original amount.
+  (let [pending (t 3N a1 a2 10N #{:pending})
+        post (assoc (t 4N 0N 0N 0N #{:post-pending-transfer})
+                    :pending-id 3N
+                    :code 0)
+        void (assoc (t 5N 0N 0N 0N #{:void-pending-transfer})
+                    :pending-id 3N
+                    :code 0)
+        model (-> init0
+                  (ca-step [a1 a2] [:ok :ok])
+                  (ct-step [pending] [:ok]))]
+    (testing "post"
+      (let [m (ct-step model [post] [:ok])]
+        (is (consistent? m))
+        (is (= (assoc (tts post)
+                      :code   3N
+                      :amount 0N
+                      :debit-account-id 1N
+                      :credit-account-id 2N)
+               (bm/get (:transfers m) 4N)))))
+    (testing "void"
+      (let [m (ct-step model [void] [:ok])]
+        (is (consistent? m))
+        (is (= (assoc (tts void)
+                      :code   3N
+                      :amount 10N
+                      :debit-account-id 1N
+                      :credit-account-id 2N)
+               (bm/get (:transfers m) 5N)))))))
 
 (deftest balancing-credit-test
   ; Start off debiting a2 by 10, so we have a limit to reach
