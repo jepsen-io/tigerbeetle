@@ -1,4 +1,4 @@
-ns jepsen.tigerbeetle.model
+(ns jepsen.tigerbeetle.model
   "A state machine model of TigerBeetle's semantics.
 
   ## Timestamps

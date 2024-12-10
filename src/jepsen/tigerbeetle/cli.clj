@@ -194,6 +194,11 @@
     :parse-fn read-string
     :validate [#(and (not (neg? %)) (rational? %)) "Must be a non-negative rational."]]
 
+   [nil "--timeout MILLIS" "Client timeout, in milliseconds"
+    :default 5000
+    :parse-fn parse-long
+    :validate [pos? "Must be positive."]]
+
    [nil "--tcpdump" "Dumps traffic to a pcap file."]
 
    [nil "--zip PATH" "Installs a local zip file, rather than downloading an official release."]

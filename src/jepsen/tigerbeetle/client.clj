@@ -464,18 +464,12 @@
                            {:timestamp   The server timestamp for this operation
                             :value       A vector of matching transfers}")
 
+  (deref+ [this fut]
+          "Takes a future. Dereferences the future, throwing and closing on
+          timeout.")
+
   (close! [this]
           "Closes the client."))
-
-(defn deref+
-  "Takes a client and future. Dereferences the future. Throws and closes client
-  on timeout."
-  [^Client client fut]
-  (let [res (deref fut 5000 ::timeout)]
-    (when (identical? res ::timeout)
-      (.close client)
-      (throw+ {:type :timeout}))
-    res))
 
 (defn with-timestamp
   "Takes a response and a value extracted from that response. Returns a map of
@@ -487,45 +481,52 @@
   {:timestamp (.getTimestamp (.getHeader response))
    :value     value})
 
-(defrecord TrackingClient [^Client client, node, primary-tracker]
+(defrecord TrackingClient [^Client client, node, primary-tracker, ^long timeout]
   IClient
   (create-accounts! [this accounts]
     (let [req (account-batch accounts)
-          res (deref+ client (.createAccountsAsync client req))]
+          res (deref+ this (.createAccountsAsync client req))]
       (primary-tracker-write-completed! primary-tracker node)
       (with-timestamp res (create-account-result-batch->clj req res))))
 
   (create-transfers! [this transfers]
     (let [req (transfer-batch transfers)
-          res (deref+ client (.createTransfersAsync client req))]
+          res (deref+ this (.createTransfersAsync client req))]
       (primary-tracker-write-completed! primary-tracker node)
       (with-timestamp res (create-transfer-result-batch->clj req res))))
 
   (lookup-accounts [this ids]
     (let [req (id-batch ids)
-          res  (deref+ client (.lookupAccountsAsync client req))]
+          res  (deref+ this (.lookupAccountsAsync client req))]
       (with-timestamp res (account-batch->clj ids res))))
 
   (lookup-transfers [this ids]
     (let [req (id-batch ids)
-          res (deref+ client (.lookupTransfersAsync client req))]
+          res (deref+ this (.lookupTransfersAsync client req))]
       (with-timestamp res (transfer-batch->clj ids res))))
 
   (query-accounts [this filter]
     (let [req (query-filter filter)
-          res (deref+ client (.queryAccountsAsync client req))]
+          res (deref+ this(.queryAccountsAsync client req))]
       (with-timestamp res (account-batch->clj res))))
 
   (query-transfers [this filter]
     (let [req (query-filter filter)
-          res (deref+ client (.queryTransfersAsync client req))]
+          res (deref+ this (.queryTransfersAsync client req))]
       (with-timestamp res (transfer-batch->clj res))))
 
   (get-account-transfers [this filter]
     (let [req (account-filter filter)
-          res (deref+ client (.getAccountTransfersAsync client req))]
+          res (deref+ this (.getAccountTransfersAsync client req))]
       (with-timestamp res
         (transfer-batch->clj res))))
+
+  (deref+ [this fut]
+    (let [res (deref fut timeout ::timeout)]
+      (when (identical? res ::timeout)
+        (.close client)
+        (throw+ {:type :timeout}))
+      res))
 
   (close! [this]
           (.close client))
@@ -551,4 +552,5 @@
                                                     1))))
                 into-array))
     node
-    (:primary-tracker test)))
+    (:primary-tracker test)
+    (:timeout test)))
