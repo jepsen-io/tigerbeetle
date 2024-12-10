@@ -23,6 +23,7 @@
   *hashmap* order, which means that some accounts get hot access, and others
   are cooler, and newly created accounts can be either hot or cool."
   (:require [bifurcan-clj [core :as b]
+                          [int-map :as bim]
                           [map :as bm]
                           [list :as bl]
                           [set :as bs]]
@@ -144,75 +145,78 @@
 ; corresponding update function add-*, which folds that invocation into the
 ; state when it is actually performed.
 (definterface+ IState
-	(rand-ledger [state]
-							 "Generates a random ledger.")
+  (rand-ledger [state]
+               "Generates a random ledger.")
 
-	(rand-code [state]
-						 "Generates a random code.")
+  (rand-code [state]
+             "Generates a random code.")
 
-	(rand-user-data [state]
-									"Generates random user data.")
+  (rand-user-data [state]
+                  "Generates random user data.")
 
-	(rand-account-id [state]
-									 [state ledger]
-									 "Generates a random, likely extant, account ID. Optionally
-					constrained to a single ledger.")
+  (rand-account-id [state]
+                   [state ledger]
+                   "Generates a random, likely extant, account ID. Optionally
+                   constrained to a single ledger.")
 
-	(rand-transfer-id [state]
-										"Generates a random, likely extant, transfer ID.")
+  (rand-transfer-id [state]
+                    "Generates a random, likely extant, transfer ID.")
 
-	(rand-timestamp [state]
-									"Generates a random timestamp likely to be within the range
-				 of timestamps for the database.")
+  (rand-timestamp [state]
+                  "Generates a random timestamp likely to be within the range
+                  of timestamps for the database.")
 
-	(gen-new-accounts [state n]
-										"Generates a series of n new accounts.")
+  (gen-new-accounts [state n]
+                    "Generates a series of n new accounts.")
 
-	(gen-new-transfer-1 [state id]
-											"Generates a single first-phase transfer with the given
-					 ID--either single-phase or pending.")
+  (gen-new-transfer-1 [state id]
+                      "Generates a single first-phase transfer with the given
+                      ID--either single-phase or pending.")
 
-	(gen-new-transfer-2 [state id]
-											"Generates a single second-phase transfer with the given
-					 ID--closing or voiding a pending transfer.")
+  (gen-new-transfer-2 [state id]
+                      "Generates a single second-phase transfer with the given
+                      ID--closing or voiding a pending transfer.")
 
-	(gen-new-transfer [state id]
-										"Generates a single transfer with the given ID.")
+  (gen-new-transfer [state id]
+                    "Generates a single transfer with the given ID.")
 
-	(gen-new-transfers [state n]
-										 "Generates a series of n transfers between accounts.")
+  (gen-new-transfers [state n]
+                     "Generates a series of n transfers between accounts.")
 
-	(add-new-accounts [state accounts]
-										"Called when we invoke create-accounts, to track that these
-					accounts may now exist.")
+  (add-new-accounts [state accounts]
+                    "Called when we invoke create-accounts, to track that these
+                    accounts may now exist.")
 
-	(add-new-transfers [state transfers]
-										 "Called when we invoke create-transfers, to track that
-					 those transfers may now exist.")
+  (add-new-transfers [state transfers]
+                     "Called when we invoke create-transfers, to track that
+                     those transfers may now exist.")
 
-	(saw-accounts [state accounts]
-								"Updates the state to acknowledge that we have positively
-				observed a series of accounts.")
+  (saw-accounts [state accounts]
+                "Updates the state to acknowledge that we have positively
+                observed a series of accounts.")
 
-	(saw-transfers [state transfers]
-								 "Updates the state to acknowldge that we have positively
-				 observed a series of transfers.")
+  (saw-transfers [state transfers]
+                 "Updates the state to acknowldge that we have positively
+                 observed a series of transfers.")
 
-	(gen-lookup-accounts [state n]
-											 "Draws a vector of n account IDs that we might want to
-						look up.")
+  (log-invoke [state invoke]
+              "Logs an invocation op")
 
-	(gen-lookup-transfers [state n]
-												"Draws a vector of n transfers IDs that we might want
-						to look up.")
+  (gen-lookup-accounts [state n]
+                       "Draws a vector of n account IDs that we might want to
+                       look up.")
 
-	(gen-query-filter [state]
-										"Generates a query filter map for query-accounts or
-					query-transfers.")
+  (gen-lookup-transfers [state n]
+                        "Draws a vector of n transfers IDs that we might want
+                        to look up.")
 
-	(gen-account-filter [state]
-											"Generates an account filter map for a
-					 get-account-transfers operation."))
+  (gen-query-filter [state]
+                    "Generates a query filter map for query-accounts or
+                    query-transfers.")
+
+  (gen-account-filter [state]
+                      "Generates an account filter map for a
+                      get-account-transfers operation."))
 
 (defrecord State
 	[
@@ -223,11 +227,14 @@
 	 transfers           ; A Bifurcan map of id->transfer
 	 ledger->account-ids ; A Bifurcan map of ledger to lists of account IDs.
 	 pending-transfers   ; A Bifurcan map of id->transfer,
-	 ; for transfers we intend to complete later.
+                    	 ; for transfers we intend to complete later.
 	 ; A Bifurcan set of account IDs we may have created, but haven't seen yet.
 	 unseen-accounts
 	 ; Ditto, transfers
 	 unseen-transfers
+   ; An integer map of processes to the last invocation that process performed.
+   ; Used to connect (e.g.) create-transfer requests to their results.
+   process->invoke
 	 ]
 
 	IState
@@ -479,7 +486,10 @@
 						 :timestamp-min (reduce min timestamp-min timestamps)
 						 :timestamp-max (reduce max timestamp-max timestamps)
 						 :unseen-transfers
-						 (binto bs/remove unseen-transfers (keep :id transfers))))))
+						 (binto bs/remove unseen-transfers (keep :id transfers)))))
+
+  (log-invoke [this invoke]
+    (update this :process->invoke bim/put (:process invoke) invoke)))
 
 (defn state
 	"A fresh state."
@@ -493,7 +503,8 @@
 		 :unseen-accounts     bs/empty
 		 :unseen-transfers    bs/empty
 		 :pending-transfers   bm/empty
-		 :ledger->account-ids bm/empty}))
+		 :ledger->account-ids bm/empty
+     :process->invoke     (bim/int-map)}))
 
 ; A generator which maintains the state and ensures its wrapped generator has
 ; access to it via the context map.
@@ -504,41 +515,46 @@
 			[op (GenContext. gen' state)]))
 
 	(update [this test ctx op]
-		(let [ctx (assoc ctx :state state)
-					gen' (gen/update gen test ctx op)
-					{:keys [type f value]} op]
-			(match
-				[type f]
+		(let [{:keys [type f value]} op
+          ; Log invocation
+          state (if (h/invoke? op)
+                  (log-invoke state op)
+                  state)
+          ; Various state transformations
+          state
+          (match [type f]
+                 ; We're creating new accounts
+                 [:invoke :create-accounts]
+                 (add-new-accounts state value)
 
-				; We're creating new accounts
-				[:invoke :create-accounts]
-				(GenContext. gen' (add-new-accounts state value))
+                 ; We're creating new transfers
+                 [:invoke :create-transfers]
+                 (add-new-transfers state value)
 
-				; We're creating new transfers
-				[:invoke :create-transfers]
-				(GenContext. gen' (add-new-transfers state value))
+                 ; We saw an account
+                 [:ok :lookup-accounts]
+                 (saw-accounts state value)
 
-				; We saw an account
-				[:ok :lookup-accounts]
-				(GenContext. gen' (saw-accounts state value))
+                 ; We saw a transfer
+                 [:ok :lookup-transfers]
+                 (saw-transfers state value)
 
-				; We saw a transfer
-				[:ok :lookup-transfers]
-				(GenContext. gen' (saw-transfers state value))
+                 ; This also tells us about transfers
+                 [:ok :get-account-transfers]
+                 (saw-transfers state value)
 
-				; This also tells us about transfers
-				[:ok :get-account-transfers]
-				(GenContext. gen' (saw-transfers state value))
+                 ; Queries tell us about accounts/transfers
+                 [:ok :query-accounts]
+                 (saw-accounts state value)
 
-				; Queries tell us about accounts/transfers
-				[:ok :query-accounts]
-				(GenContext. gen' (saw-accounts state value))
+                 [:ok :query-transfers]
+                 (saw-transfers state value)
 
-				[:ok :query-transfers]
-				(GenContext. gen' (saw-transfers state value))
-
-				[_ _]
-				this))))
+                 [_ _]
+                 state)
+          ctx  (assoc ctx :state state)
+          gen' (gen/update gen test ctx op)]
+      (GenContext. gen' state))))
 
 (defn wrap-gen
 	"Wraps a generator in one that maintains our state."
