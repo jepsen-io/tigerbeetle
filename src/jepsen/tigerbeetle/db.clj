@@ -126,6 +126,7 @@
         ; of these both as env vars and as arguments
         bin
         :start
+        (when (:log-debug test) ["--log-debug" "--experimental"])
         (str "--cache-grid=" cache-grid-size)
         (str "--addresses=" (addresses test))
         data-file)))
