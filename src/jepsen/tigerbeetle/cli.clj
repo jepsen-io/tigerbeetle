@@ -79,6 +79,7 @@
   [opts]
   (str (or (:zip opts) (:version opts))
        " " (name (:workload opts))
+       " c=" (name (:client-nodes opts))
        (when-let [n (:nemesis opts)]
          (str " " (->> n (map name) sort (str/join ","))))))
 
@@ -148,7 +149,12 @@
 
 (def cli-opts
   "Command-line option specification"
-  [[nil "--download-data" "Whether to download data files from nodes."]
+  [[nil "--client-nodes MODE" "Whether to connect a client to one node or all nodes."
+    :default :one
+    :parse-fn keyword
+    :validate [#{:one :all} "Must be one or all"]]
+
+   [nil "--download-data" "Whether to download data files from nodes."]
 
    [nil "--final-time-limit SECONDS" "How long should we run the final generator for, at most? In seconds."
     :default  200

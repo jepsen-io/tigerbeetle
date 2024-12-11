@@ -538,19 +538,25 @@
 (defn open
   "Opens a client to the given node."
   [test node]
-  (TrackingClient.
-    (Client. (UInt128/asBytes cluster-id)
-           ; Client can only take IP addresses, not hostnames. Clients also
-           ; *must* receive the full list of nodes. However, we want to ensure
-           ; that clients talk to a specific node, so we have a chance to see
-           ; when two nodes disagree. We give them fake ports for all but the
-           ; target node.
-           (->> (:nodes test)
+  (let [addrs (case (:client-nodes test)
+                ; Client can only take IP addresses, not hostnames. Clients
+                ; also *must* receive the full list of nodes. However, we want
+                ; to ensure that clients talk to a specific node, so we have a
+                ; chance to see when two nodes disagree. We give them fake
+                ; ports for all but the target node.
+                :one
                 (map (fn [some-node]
                        (str (cn/ip some-node) ":" (if (= node some-node)
                                                     port
-                                                    1))))
-                into-array))
-    node
-    (:primary-tracker test)
-    (:timeout test)))
+                                                    1)))
+                     (:nodes test))
+
+                :all
+                (map (fn [some-node]
+                       (str (cn/ip some-node) ":" port))
+                     (:nodes test)))]
+    (TrackingClient.
+      (Client. (UInt128/asBytes cluster-id) (into-array addrs))
+      node
+      (:primary-tracker test)
+      (:timeout test))))
