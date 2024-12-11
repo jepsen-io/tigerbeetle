@@ -442,7 +442,7 @@
 	(gen-account-filter [this]
 		(let [flags (cond-> (condp < (dg/double)
 													; Very rarely, neither credits nor debits
-													0.95 #{}
+													0.99 #{}
 													; Sometimes both
 													0.8 #{:credits :debits}
 													; Mostly one
