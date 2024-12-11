@@ -240,8 +240,8 @@
     (when timestamp-min (.setTimestampMin f timestamp-min))
     (when timestamp-max (.setTimestampMax f timestamp-max))
     (when limit         (.setLimit f limit))
-    (info :filter (datafy f))
-    (assert (= filter (select-keys (datafy f) (keys filter))))
+    ;(info :filter (datafy f))
+    ;(assert (= filter (select-keys (datafy f) (keys filter))))
     f))
 
 ; Deserialization
