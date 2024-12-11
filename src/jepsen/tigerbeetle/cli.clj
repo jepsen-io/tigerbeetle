@@ -12,6 +12,7 @@
                     [util :as util]]
             [jepsen.control.scp :as scp]
             [jepsen.tigerbeetle [client :as client]
+                                [checker :as tc]
                                 [core :refer [all-fs]]
                                 [db :as db]
                                 [nemesis :as nemesis]]
@@ -132,6 +133,7 @@
             :primary-tracker primary-tracker
             :checker  (checker/compose
                         {:perf       (checker/perf)
+                         :node-perf  (tc/node-perf-checker)
                          :clock      (checker/clock-plot)
                          :stats      (checker/stats)
                          :exceptions (checker/unhandled-exceptions)
@@ -141,7 +143,6 @@
             :plot      {:nemeses (:perf nemesis)}
             :generator generator
             :logging   {:overrides logging-overrides}
-            :remote    (scp/remote control/ssh)
             :nonserializable-keys [:primary-tracker]
             })))
 

@@ -67,7 +67,7 @@
                           [graph :as bg]
                           [map :as bm]
                           [set :as bs]]
-            [dom-top.core :refer [loopr]]
+            [dom-top.core :refer [loopr real-pmap]]
             [elle [core :as elle]
                   [graph]
                   [rels :refer [ww wr rw]]
@@ -75,6 +75,7 @@
                   [util :refer [nanos->secs]]]
             [jepsen [checker :as checker]
                     [history :as h]]
+            [jepsen.checker.perf :as perf]
             [jepsen.tigerbeetle [core :refer [bireduce
                                               write-fs
                                               read-fs
@@ -721,3 +722,43 @@
   "Constructs a new TigerBeetle checker."
   []
   (Checker.))
+
+;; Auxiliary plots
+
+(defn per-node-history
+  "Filters a history to just a single node."
+  [test node history]
+  (let [nodes (:nodes test)
+        n (count nodes)
+        i (.indexOf nodes node)]
+    (h/filter (fn [op]
+                (or (not (h/client-op? op))
+                    (= i (mod (:process op) n))))
+              history)))
+
+(defn per-node-histories
+  "Takes a test and a history. Returns a map of node name to histories for that
+  node."
+  [test history]
+  (zipmap (:nodes test)
+          (map #(per-node-history test % history)
+               (:nodes test))))
+
+(defn node-perf-checker
+  "TigerBeetle clients can get stuck for a very long time when they're
+  partitioned away from some but not all servers. To measure that, it's helpful
+  to have a breakdown of latencies by node. This checker produces a node-perf
+  directory with latency-raw-<node>.png plots for each node."
+  []
+  (reify checker/Checker
+    (check [this test history opts]
+      (let [opts (update opts :subdirectory concat ["node-perf"])
+            histories (per-node-histories test history)]
+        (->> histories
+             (real-pmap (fn [[node history]]
+                          (perf/point-graph!
+                            test history
+                            (assoc opts :filename
+                                   (str "latency-raw-" node ".png")))))
+             (map deref))
+        {:valid? true}))))
