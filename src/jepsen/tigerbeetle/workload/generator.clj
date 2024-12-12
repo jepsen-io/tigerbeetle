@@ -219,16 +219,18 @@
                      "Generates a series of n transfers between accounts.")
 
   (add-new-accounts [state accounts]
-                    [state accounts results]
+                    [state accounts results p]
                     "Called when we invoke create-accounts, to track that these
-                    accounts may now exist. The ternary form handles when we
-                    get a response back from the DB.")
+                    accounts may now exist. The longer form handles when we get
+                    a response back from the DB, and marks failed accounts as
+                    unlikely with probability p.")
 
   (add-new-transfers [state transfers]
-                     [state transfers results]
+                     [state transfers results p]
                      "Called when we invoke create-transfers, to track that
-                     those transfers may now exist. The ternary form handles
-                     when we get a response back from the DB.")
+                     those transfers may now exist. The longer form form
+                     handles when we get a response back from the DB, and marks
+                     failed transfers as unlikely with probability p.")
 
   (read-accounts [state accounts]
                  [state ids accounts]
@@ -504,16 +506,14 @@
                     ledger->account-ids
                     new-accounts))))
 
-  (add-new-accounts [this new-accounts results]
+  (add-new-accounts [this new-accounts results p]
     ; Zip through results and mark failures as unlikely.
     (assoc this
            :accounts
            (bireduce (fn [accounts account result]
                        (case result
                          (:ok :exists) accounts
-                         ; With an error code, it's v unlikely we'll see this
-                         ; again.
-                         (lm/is-unseen accounts 0.95 (:id account))))
+                         (lm/is-unseen accounts p (:id account))))
                      accounts
                      new-accounts
                      results)))
@@ -529,14 +529,14 @@
                   (map :id)
                   (binto bs/add pending-transfer-ids)))))
 
-  (add-new-transfers [this new-transfers results]
+  (add-new-transfers [this new-transfers results p]
     ; Zip through results and mark failures as unlikely
     (assoc this
            :transfers
            (bireduce (fn [transfers transfer result]
                        (case result
                          (:ok :exists) transfers
-                         (lm/is-unseen transfers 0.95 (:id transfer))))
+                         (lm/is-unseen transfers p (:id transfer))))
                      transfers
                      new-transfers
                      results)))
@@ -633,11 +633,27 @@
 
                  ; Completing accounts tells us some may be unlikely
                  [:ok :create-accounts]
-                 (add-new-accounts state invoke-value value)
+                 (add-new-accounts state invoke-value value 0.95)
 
                  ; Ditto, completing transfers
                  [:ok :create-transfers]
-                 (add-new-transfers state invoke-value value)
+                 (add-new-transfers state invoke-value value 0.95)
+
+                 ; A timeout gives us less confidence, but since TigerBeetle
+                 ; basically refuses to ever nack a request, we'll have to
+                 ; handle this often.
+                 [:info :create-accounts]
+                 (add-new-accounts state invoke-value nil 0.8)
+
+                 [:info :create-transfers]
+                 (add-new-transfers state invoke-value nil 0.8)
+
+                 ; An outright failure is a strong signal
+                 [:fail :create-accounts]
+                 (add-new-accounts state invoke-value nil 0.95)
+
+                 [:fail :create-transfers]
+                 (add-new-transfers state invoke-value nil 0.95)
 
                  ; We read accounts
                  [:ok :lookup-accounts]
