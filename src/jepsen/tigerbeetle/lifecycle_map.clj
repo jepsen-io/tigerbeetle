@@ -13,6 +13,7 @@
                           [map :as bm]
                           [set :as bs]]
             [clojure.data.generators :as dg]
+            [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
             [potemkin :refer [definterface+]])
   (:import (io.lacuna.bifurcan ISet
@@ -150,9 +151,10 @@
       this
       (if-let [x (or (bm/get likely id)
                      (bm/get unlikely id))]
-        (LifecycleMap. (bm/put seen id x)
-                       (bm/remove likely id)
-                       (bm/remove unlikely id))
+        (do (info id "now seen")
+            (LifecycleMap. (bm/put seen id x)
+                           (bm/remove likely id)
+                           (bm/remove unlikely id)))
         (throw (IllegalStateException.
                  (str "Can't see id that was never added: " (pr-str id)))))))
 
@@ -163,9 +165,10 @@
       this
       ; Swap to unlikely
       (if-let [x (bm/get likely id)]
-        (LifecycleMap. seen
-                       (bm/remove likely id)
-                       (bm/put unlikely id x))
+        (do ;(info id "now unlikely")
+            (LifecycleMap. seen
+                           (bm/remove likely id)
+                           (bm/put unlikely id x)))
         ; Already unlikely
         this)))
 

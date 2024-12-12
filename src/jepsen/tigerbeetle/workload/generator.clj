@@ -35,7 +35,8 @@
             [jepsen [generator :as gen]
                     [history :as h]
                     [util :as util]]
-            [jepsen.tigerbeetle [lifecycle-map :as lm]]
+            [jepsen.tigerbeetle [core :refer [bireduce]]
+                                [lifecycle-map :as lm]]
             [potemkin :refer [definterface+]]))
 
 (defn b-inverse-cdf
@@ -63,7 +64,7 @@
   ([^double skew ^long n]
    (if (= n 0)
      0
-     (do (assert (not= 1.0001 skew)
+     (do (assert (not= 1.0 skew)
                  "Sorry, our approximation can't do skew = 1.0! Try a small epsilon, like 1.0001")
          (let [t (/ (- (Math/pow n (- 1 skew)) skew)
                     (- 1 skew))]
@@ -225,13 +226,17 @@
                      "Called when we invoke create-transfers, to track that
                      those transfers may now exist.")
 
-  (saw-accounts [state accounts]
-                "Updates the state to acknowledge that we have positively
-                observed a series of accounts.")
+  (read-accounts [state accounts]
+                 [state ids accounts]
+                 "Updates the state with the results of an account read. The
+                 binary form is for a predicate read. The ternary form is for a
+                 read of specific IDs.")
 
-  (saw-transfers [state transfers]
-                 "Updates the state to acknowldge that we have positively
-                 observed a series of transfers.")
+  (read-transfers [state transfers]
+                  [state ids transfers]
+                 "Updates the state with the results of a transfer read. The
+                 binary form is for a predicate read. The ternary form is for a
+                 read of specific IDs.")
 
   (log-invoke [state invoke]
               "Logs an invocation op")
@@ -506,7 +511,7 @@
                   (map :id)
                   (binto bs/add pending-transfer-ids)))))
 
-	(saw-accounts [this results]
+	(read-accounts [this results]
 		(let [timestamps (keep :timestamp results)]
 			(assoc this
 						 :timestamp-min (reduce min timestamp-min timestamps)
@@ -514,13 +519,42 @@
 						 :accounts
 						 (reduce lm/is-seen accounts (keep :id results)))))
 
-	(saw-transfers [this results]
+  (read-accounts [this ids results]
+    (let [this' (read-accounts this results)]
+      ; Incorporate negative reads
+      (assoc this'
+             :accounts
+             (bireduce (fn [accounts id result]
+                         (if result
+                           accounts
+                           ; Each failed read has a 50% chance to knock this
+                           ; out of the likely pool.
+                           (lm/is-unseen accounts 0.5 id)))
+                       (:accounts this')
+                       ids
+                       results))))
+
+	(read-transfers [this results]
 		(let [timestamps (keep :timestamp transfers)]
 			(assoc this
 						 :timestamp-min (reduce min timestamp-min timestamps)
 						 :timestamp-max (reduce max timestamp-max timestamps)
              :transfers
 						 (reduce lm/is-seen transfers (keep :id results)))))
+
+  (read-transfers [this ids results]
+    (let [this' (read-transfers this results)]
+      ; Incorporate negative reads
+      (assoc this' :transfers
+             (bireduce (fn [transfers id result]
+                         (if result
+                           transfers
+                           ; Each failed read has a 50% chance to knock this
+                           ; out of the likely pool.
+                           (lm/is-unseen transfers 0.5 id)))
+                       (:transfers this')
+                       ids
+                       results))))
 
   (log-invoke [this invoke]
     (update this :process->invoke bim/put (:process invoke) invoke)))
@@ -547,7 +581,7 @@
 			[op (GenContext. gen' state)]))
 
 	(update [this test ctx op]
-		(let [{:keys [type f value]} op
+		(let [{:keys [process type f value]} op
           ; Log invocation
           state (if (h/invoke? op)
                   (log-invoke state op)
@@ -563,24 +597,26 @@
                  [:invoke :create-transfers]
                  (add-new-transfers state value)
 
-                 ; We saw an account
+                 ; We read accounts
                  [:ok :lookup-accounts]
-                 (saw-accounts state value)
+                 (let [ids (:value (bim/get (:process->invoke state) process))]
+                   (read-accounts state ids value))
 
-                 ; We saw a transfer
+                 ; We read transfers
                  [:ok :lookup-transfers]
-                 (saw-transfers state value)
+                 (let [ids (:value (bim/get (:process->invoke state) process))]
+                   (read-transfers state ids value))
 
                  ; Get-account-transfers tells us transfers exist
                  [:ok :get-account-transfers]
-                 (saw-transfers state value)
+                 (read-transfers state value)
 
                  ; Queries tell us accounts/transfers exist
                  [:ok :query-accounts]
-                 (saw-accounts state value)
+                 (read-accounts state value)
 
                  [:ok :query-transfers]
-                 (saw-transfers state value)
+                 (read-transfers state value)
 
                  [_ _]
                  state)
