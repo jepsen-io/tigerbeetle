@@ -93,9 +93,13 @@
                                  (str "Expected a value for key " k))))))]
     (Maps/from ks to-v)))
 
+;; Lifecycle maps
+
 (definterface+ ILifecycleMap
-  (is-possible [m id x]
-                 "Adds a possible record to the map.")
+  (is-possible [m x]
+               [m id x]
+                 "Adds a possible record to the map. In the two-arity form,
+                 expects x to have a key (:id x).")
 
   (is-seen [m id]
            "Indicates that we positively observed the given id.")
@@ -118,8 +122,15 @@
             "A map of ids to likely records.")
 
   (unlikely [m]
-            "A map of ids to unlikely records."))
+            "A map of ids to unlikely records.")
 
+  (seen? [m id] "Have we seen this ID?")
+
+  (unseen? [m id] "Have we not yet seen this ID?")
+
+  (likely? [m id] "Is this ID likely?")
+
+  (unlikely? [m id] "Is this ID unlikely?"))
 
 ; We divide records into disjoint maps of id->record:
 ; seen      - Definitely seen
@@ -127,17 +138,23 @@
 ; unlikely  - Unseen and unlikely
 (defrecord LifecycleMap [seen likely unlikely]
   ILifecycleMap
+  (is-possible [m x]
+    (is-possible m (:id x) x))
+
   (is-possible [m id x]
     (LifecycleMap. seen (bm/put likely id x) unlikely))
 
   (is-seen [this id]
-    (if-let [x (or (bm/get likely id)
-                   (bm/get unlikely id))]
-      (LifecycleMap. (bm/put seen id x)
-                     (bm/remove likely id)
-                     (bm/remove unlikely id))
-      (throw (IllegalStateException.
-               (str "Can't see id that was never added:" (pr-str id))))))
+    (if (bm/contains? seen id)
+      ; Already saw this
+      this
+      (if-let [x (or (bm/get likely id)
+                     (bm/get unlikely id))]
+        (LifecycleMap. (bm/put seen id x)
+                       (bm/remove likely id)
+                       (bm/remove unlikely id))
+        (throw (IllegalStateException.
+                 (str "Can't see id that was never added: " (pr-str id)))))))
 
   (is-unseen [this p id]
     (if (or (bm/contains? seen id)
@@ -165,7 +182,13 @@
     likely)
 
   (unlikely [this]
-    unlikely))
+    unlikely)
+
+  (seen?      [this id] (bm/contains? seen id))
+  (unseen?    [this id] (or (bm/contains? likely id)
+                            (bm/contains? unlikely id)))
+  (likely?    [this id] (bm/contains? likely id))
+  (unlikely?  [this id] (bm/contains? unlikely id)))
 
 (defn lifecycle-map
   "Constructs an empty lifecycle map."

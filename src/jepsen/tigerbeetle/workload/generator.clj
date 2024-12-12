@@ -35,6 +35,7 @@
             [jepsen [generator :as gen]
                     [history :as h]
                     [util :as util]]
+            [jepsen.tigerbeetle [lifecycle-map :as lm]]
             [potemkin :refer [definterface+]]))
 
 (defn b-inverse-cdf
@@ -48,6 +49,10 @@
                (Math/pow (+ (* tp (- 1 skew))
                             skew)
                          (/ (- 1 skew)))))))
+
+(def zipf-skew
+  "When we choose zipf-distributed things, what skew do we generally pick?"
+  1.001)
 
 (defn zipf
   "Selects a Zipfian-distributed integer in [0, n) with a given skew
@@ -139,6 +144,35 @@
                      (assoc! events i
                              (update (get events i) :flags conj :linked))))))))
 
+(defn probe-lifecycle-map
+  "Sometimes we want to find an zipfian-distributed ID that's both in a
+  collection of IDs and also has a particular lifecycle state. This tries to
+  find an ID in `ids` and which, in `lifecycle-map`, is mostly seen or likely,
+  as opposed to unlikely or imagined."
+  [ids lifecycle-map]
+  (let [n   (b/size ids)
+        ; What function (match? lifecycle-map id) will tell us if we won?
+        match? (condp < (dg/double)
+                 0.6 lm/seen?
+                 0.1 lm/likely?
+                 lm/unlikely?)]
+    (if (= 0 n)
+      ; Make up something.
+      (bigint (inc (zipf 10)))
+      ; Sample several times, probing linearly for one with the right state.
+      ; Note that a linear scan over hashed keys gives us an unordered
+      ; traversal, so we're hopefully unlikely to see correlated failures
+      ; here.
+      (loop [i      (zipf n)
+             tries  (min n 10)]
+        (let [id (b/nth ids i)]
+          (when (= 0 tries)
+            (info "probe for id failed" id))
+          (if (or (= 0 tries) (match? lifecycle-map id))
+            id ; Done
+            (recur (mod (inc i) n) ; Linear probe
+                   (dec tries))))))))
+
 ; The State encapsulates the information we need to know about the current
 ; state of the database in order to generate new invocations. Mutations are
 ; split into pairs: gen-*, which generates data for an invocation, and a
@@ -220,18 +254,14 @@
 
 (defrecord State
 	[
-	 next-id             ; The next ID we'll hand out
-	 ^long timestamp-min ; The smallest timestamp observed
-	 ^long timestamp-max ; The largest timestamp observed
-	 accounts            ; A Bifurcan map of id->account
-	 transfers           ; A Bifurcan map of id->transfer
-	 ledger->account-ids ; A Bifurcan map of ledger to lists of account IDs.
-	 pending-transfers   ; A Bifurcan map of id->transfer,
-                    	 ; for transfers we intend to complete later.
-	 ; A Bifurcan set of account IDs we may have created, but haven't seen yet.
-	 unseen-accounts
-	 ; Ditto, transfers
-	 unseen-transfers
+	 next-id              ; The next ID we'll hand out
+	 ^long timestamp-min  ; The smallest timestamp observed
+	 ^long timestamp-max  ; The largest timestamp observed
+	 accounts             ; A LifecycleMap of id->account
+	 transfers            ; A LifecycleMap of id->transfer
+	 ledger->account-ids  ; A Bifurcan map of ledger to lists of account IDs.
+   pending-transfer-ids ; A Bifurcan set of ids of transfers we intend to
+                        ; complete later.
    ; An integer map of processes to the last invocation that process performed.
    ; Used to connect (e.g.) create-transfer requests to their results.
    process->invoke
@@ -239,26 +269,29 @@
 
 	IState
 	(rand-account-id [this]
-		(let [n (b/size accounts)]
-			(if (pos? n)
-				(bm/key (zipf-nth accounts))
-				; No accounts yet but we can always make one up!
-				(bigint (inc (zipf 100))))))
+    (let [r (dg/double)]
+      (bm/key
+        (or ; Mostly seen & likely accounts
+            (when (< 0.6 r) (zipf-nth zipf-skew (lm/seen accounts)   nil))
+            (when (< 0.1 r) (zipf-nth zipf-skew (lm/likely accounts) nil))
+            ; Sometimes an unlikely account
+            (zipf-nth 1.0001 (lm/unlikely accounts) nil)
+            ; If no options, make up a key
+            (bm/->entry [(bigint (inc (zipf 10))) nil])))))
 
 	(rand-account-id [this ledger]
-		(let [ids (bm/get ledger->account-ids ledger bl/empty)
-					n   (b/size ids)]
-			(if (pos? n)
-				(zipf-nth ids)
-				; No accounts yet, but we can always make one up!
-				(bigint (inc (zipf 100))))))
+    (probe-lifecycle-map (bm/get ledger->account-ids ledger bl/empty) accounts))
 
 	(rand-transfer-id [this]
-		(let [n (b/size transfers)]
-			(if (pos? n)
-				(bm/key (zipf-nth transfers))
-				; No transfers yet but we can always make one up!
-				(bigint (inc (zipf 100))))))
+    (let [r (dg/double)]
+      (bm/key
+        (or ; Mostly seen and likely
+            (when (< 0.6 r) (zipf-nth zipf-skew (lm/seen transfers)   nil))
+            (when (< 0.1 r) (zipf-nth zipf-skew (lm/likely transfers) nil))
+            ; Sometimes unlikely
+            (zipf-nth zipf-skew (lm/unlikely accounts) nil)
+            ; Make something up
+            (bm/->entry [(bigint (inc (zipf 10))) nil])))))
 
 	(rand-ledger [this]
 		(inc (zipf 3)))
@@ -292,15 +325,17 @@
 					 chains)))
 
 	(gen-new-transfer-1 [this id]
-		(let [; TODO: occasionally generate incompatible ledgers
-					ledger (rand-ledger this)
-					debit-account-id (rand-account-id this ledger)
+		(let [debit-account-id  (rand-account-id this)
+          ; NB: The account ID we generate might be fake!
+          debit-account     (bm/get (lm/possible accounts) debit-account-id nil)
+					ledger            (:ledger debit-account (rand-ledger this))
 					; Mostly generate distinct debit/credit accounts
-					credit-account-id (loop [tries 3]
+					credit-account-id (loop [tries 10]
 															(let [id (rand-account-id this ledger)]
 																(if (and (pos? tries) (= id debit-account-id))
 																	(recur (dec tries))
 																	id)))
+          ; TODO: other flags
 					flags (cond-> #{}
 									(< (dg/double) 1/2) (conj :pending))]
 			{:id                id
@@ -318,11 +353,12 @@
 
   (gen-new-transfer-2 [this id]
     ; TODO: sometimes try to conclude a non-pending transfer
-    (let [pending (if (= 0 (b/size pending-transfers))
+    (let [pending (or (bm/get (lm/possible transfers)
+                              (probe-lifecycle-map pending-transfer-ids
+                                                   transfers)
+                              nil)
                       ; Make up a transfer that doesn't exist
-                      (gen-new-transfer-1 this (rand-transfer-id this))
-                      ; Complete a random pending transfer
-                      (bm/value (zipf-nth pending-transfers)))
+                      (gen-new-transfer-1 this (rand-transfer-id this)))
           ledger (if (< (dg/double) 1/256)
                    (rand-ledger this)
                    (:ledger pending))
@@ -372,35 +408,6 @@
 					 (mapv (fn [id]
 									 (gen-new-transfer this id)))
 					 chains)))
-
-	(add-new-accounts [this new-accounts]
-		(let [ids (mapv :id new-accounts)
-					ledger->account-ids
-					(binto (fn track-ledger [m account]
-									 (bm/update m
-															(:ledger account)
-															(fn append [account-ids]
-																(if account-ids
-																	(bl/add-last account-ids
-																							 (:id account))
-																	(bl/list (:id account))))))
-								 ledger->account-ids
-								 new-accounts)]
-			(assoc this
-						 :next-id             (inc (reduce max next-id ids))
-						 :accounts            (into-by-id accounts new-accounts)
-						 :ledger->account-ids ledger->account-ids
-						 :unseen-accounts     (binto bs/add unseen-accounts ids))))
-
-	(add-new-transfers [this new-transfers]
-		(let [ids (mapv :id new-transfers)]
-			(assoc this
-						 :next-id           (inc (reduce max next-id ids))
-						 :transfers         (into-by-id transfers new-transfers)
-						 :unseen-transfers  (binto bs/add unseen-transfers ids)
-						 :pending-transfers (into-by-id pending-transfers
-																						(filter (comp :pending :flags)
-																										new-transfers)))))
 
 	(gen-lookup-accounts [this n]
 		(->> (repeatedly (partial rand-account-id this))
@@ -472,21 +479,48 @@
 				(< (dg/double) 1/16)
 				(assoc :code (rand-code this)))))
 
-	(saw-accounts [this accounts]
-		(let [timestamps (keep :timestamp accounts)]
+	(add-new-accounts [this new-accounts]
+		(let [ids (mapv :id new-accounts)]
+			(assoc this
+						 :next-id             (inc (reduce max next-id ids))
+						 :accounts            (reduce lm/is-possible accounts new-accounts)
+						 :ledger->account-ids
+             (binto (fn track-ledger [m account]
+                      (bm/update m
+                                 (:ledger account)
+                                 (fn append [account-ids]
+                                   (if account-ids
+                                     (bl/add-last account-ids (:id account))
+                                     (bl/list (:id account))))))
+                    ledger->account-ids
+                    new-accounts))))
+
+	(add-new-transfers [this new-transfers]
+		(let [ids (mapv :id new-transfers)]
+			(assoc this
+						 :next-id   (inc (reduce max next-id ids))
+						 :transfers (reduce lm/is-possible transfers new-transfers)
+						 :pending-transfer-ids
+             (->> new-transfers
+                  (filter (comp :pending :flags))
+                  (map :id)
+                  (binto bs/add pending-transfer-ids)))))
+
+	(saw-accounts [this results]
+		(let [timestamps (keep :timestamp results)]
 			(assoc this
 						 :timestamp-min (reduce min timestamp-min timestamps)
 						 :timestamp-max (reduce max timestamp-max timestamps)
-						 :unseen-accounts
-						 (binto bs/remove unseen-accounts (keep :id accounts)))))
+						 :accounts
+						 (reduce lm/is-seen accounts (keep :id results)))))
 
-	(saw-transfers [this transfers]
+	(saw-transfers [this results]
 		(let [timestamps (keep :timestamp transfers)]
 			(assoc this
 						 :timestamp-min (reduce min timestamp-min timestamps)
 						 :timestamp-max (reduce max timestamp-max timestamps)
-						 :unseen-transfers
-						 (binto bs/remove unseen-transfers (keep :id transfers)))))
+             :transfers
+						 (reduce lm/is-seen transfers (keep :id results)))))
 
   (log-invoke [this invoke]
     (update this :process->invoke bim/put (:process invoke) invoke)))
@@ -495,16 +529,14 @@
 	"A fresh state."
 	[]
 	(map->State
-		{:next-id             1N
-		 :timestamp-min       Long/MAX_VALUE
-		 :timestamp-max       Long/MIN_VALUE
-		 :accounts            bm/empty
-		 :transfers           bm/empty
-		 :unseen-accounts     bs/empty
-		 :unseen-transfers    bs/empty
-		 :pending-transfers   bm/empty
-		 :ledger->account-ids bm/empty
-     :process->invoke     (bim/int-map)}))
+		{:next-id              1N
+		 :timestamp-min        Long/MAX_VALUE
+		 :timestamp-max        Long/MIN_VALUE
+		 :accounts             (lm/lifecycle-map)
+		 :transfers            (lm/lifecycle-map)
+		 :pending-transfer-ids bs/empty
+		 :ledger->account-ids  bm/empty
+     :process->invoke      (bim/int-map)}))
 
 ; A generator which maintains the state and ensures its wrapped generator has
 ; access to it via the context map.
@@ -539,11 +571,11 @@
                  [:ok :lookup-transfers]
                  (saw-transfers state value)
 
-                 ; This also tells us about transfers
+                 ; Get-account-transfers tells us transfers exist
                  [:ok :get-account-transfers]
                  (saw-transfers state value)
 
-                 ; Queries tell us about accounts/transfers
+                 ; Queries tell us accounts/transfers exist
                  [:ok :query-accounts]
                  (saw-accounts state value)
 
@@ -776,11 +808,13 @@
 
 (defn final-*-gen
   "Shared logic for both final read generators."
-  [unseen-field f]
+  [lifecycle-map-field f]
   (reify gen/Generator
     (op [this test ctx]
       (gen/op
-        (->> (get (:state ctx) unseen-field)
+        (->> (get (:state ctx) lifecycle-map-field)
+             lm/unseen
+             bm/keys
              sort
              (partition-all 128)
              (reduce (fn [m chunk]
@@ -796,12 +830,12 @@
 (defn final-accounts-gen
   "A generator that tries to observe every unseen account."
   []
-  (final-*-gen :unseen-accounts :lookup-accounts))
+  (final-*-gen :accounts :lookup-accounts))
 
 (defn final-transfers-gen
   "A generator that tries to observe every unseen transfer."
   []
-  (final-*-gen :unseen-transfers :lookup-transfers))
+  (final-*-gen :transfers :lookup-transfers))
 
 (defn final-gen
   "Final generator. Makes sure we try to observe every unseen account and
