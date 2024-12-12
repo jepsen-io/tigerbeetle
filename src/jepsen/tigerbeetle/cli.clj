@@ -77,7 +77,10 @@
 (defn test-name
   "Takes CLI options and constructs a test name as a string."
   [opts]
-  (str (or (:zip opts) (:version opts))
+  (str (if-let [z (:zip opts)]
+         (let [[_ filename] (re-find #"([^/]+)$" z)]
+           filename)
+         (:version opts))
        " " (name (:workload opts))
        " c=" (name (:client-nodes opts))
        (when-let [n (:nemesis opts)]
@@ -98,7 +101,7 @@
                          :partition     {:targets [:one :primaries :majority]}
                          :pause         {:targets [:one, :primaries] #_[:one :primaries :majority :all]}
                          :kill          {:targets #_[:one :primaries :majority :all]
-                                         [:one, :primaries]}
+                                         [:one]}
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload
