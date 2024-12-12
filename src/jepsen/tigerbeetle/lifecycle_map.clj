@@ -151,7 +151,7 @@
       this
       (if-let [x (or (bm/get likely id)
                      (bm/get unlikely id))]
-        (do (info id "now seen")
+        (do ; (info id "now seen")
             (LifecycleMap. (bm/put seen id x)
                            (bm/remove likely id)
                            (bm/remove unlikely id)))

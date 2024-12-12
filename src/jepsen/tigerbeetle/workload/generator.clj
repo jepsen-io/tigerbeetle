@@ -219,12 +219,16 @@
                      "Generates a series of n transfers between accounts.")
 
   (add-new-accounts [state accounts]
+                    [state accounts results]
                     "Called when we invoke create-accounts, to track that these
-                    accounts may now exist.")
+                    accounts may now exist. The ternary form handles when we
+                    get a response back from the DB.")
 
   (add-new-transfers [state transfers]
+                     [state transfers results]
                      "Called when we invoke create-transfers, to track that
-                     those transfers may now exist.")
+                     those transfers may now exist. The ternary form handles
+                     when we get a response back from the DB.")
 
   (read-accounts [state accounts]
                  [state ids accounts]
@@ -500,6 +504,20 @@
                     ledger->account-ids
                     new-accounts))))
 
+  (add-new-accounts [this new-accounts results]
+    ; Zip through results and mark failures as unlikely.
+    (assoc this
+           :accounts
+           (bireduce (fn [accounts account result]
+                       (case result
+                         (:ok :exists) accounts
+                         ; With an error code, it's v unlikely we'll see this
+                         ; again.
+                         (lm/is-unseen accounts 0.95 (:id account))))
+                     accounts
+                     new-accounts
+                     results)))
+
 	(add-new-transfers [this new-transfers]
 		(let [ids (mapv :id new-transfers)]
 			(assoc this
@@ -510,6 +528,18 @@
                   (filter (comp :pending :flags))
                   (map :id)
                   (binto bs/add pending-transfer-ids)))))
+
+  (add-new-transfers [this new-transfers results]
+    ; Zip through results and mark failures as unlikely
+    (assoc this
+           :transfers
+           (bireduce (fn [transfers transfer result]
+                       (case result
+                         (:ok :exists) transfers
+                         (lm/is-unseen transfers 0.95 (:id transfer))))
+                     transfers
+                     new-transfers
+                     results)))
 
 	(read-accounts [this results]
 		(let [timestamps (keep :timestamp results)]
@@ -586,6 +616,10 @@
           state (if (h/invoke? op)
                   (log-invoke state op)
                   state)
+          ; Value of the invocation that produced us
+          invoke-value (when (and (h/client-op? op)
+                                  (not (h/invoke? op)))
+                         (:value (bim/get (:process->invoke state) process)))
           ; Various state transformations
           state
           (match [type f]
@@ -597,15 +631,21 @@
                  [:invoke :create-transfers]
                  (add-new-transfers state value)
 
+                 ; Completing accounts tells us some may be unlikely
+                 [:ok :create-accounts]
+                 (add-new-accounts state invoke-value value)
+
+                 ; Ditto, completing transfers
+                 [:ok :create-transfers]
+                 (add-new-transfers state invoke-value value)
+
                  ; We read accounts
                  [:ok :lookup-accounts]
-                 (let [ids (:value (bim/get (:process->invoke state) process))]
-                   (read-accounts state ids value))
+                 (read-accounts state invoke-value value)
 
                  ; We read transfers
                  [:ok :lookup-transfers]
-                 (let [ids (:value (bim/get (:process->invoke state) process))]
-                   (read-transfers state ids value))
+                 (read-transfers state invoke-value value)
 
                  ; Get-account-transfers tells us transfers exist
                  [:ok :get-account-transfers]
