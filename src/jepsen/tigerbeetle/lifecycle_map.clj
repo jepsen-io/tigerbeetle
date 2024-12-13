@@ -197,3 +197,10 @@
   "Constructs an empty lifecycle map."
   []
   (LifecycleMap. bm/empty bm/empty bm/empty))
+
+(defn debug
+  "A debugging representation suitable for logging."
+  [m]
+  {:seen     (sort (bm/keys (:seen m)))
+   :likely   (sort (bm/keys (:likely m)))
+   :unlikely (sort (bm/keys (:unlikely m)))})

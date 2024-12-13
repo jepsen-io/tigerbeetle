@@ -27,7 +27,8 @@
                           [map :as bm]
                           [list :as bl]
                           [set :as bs]]
-            [clojure [datafy :refer [datafy]]]
+            [clojure [datafy :refer [datafy]]
+                     [pprint :refer [pprint]]]
             [clojure.core.match :refer [match]]
             [clojure.data.generators :as dg]
             [clojure.math.numeric-tower :refer [lcm]]
@@ -145,34 +146,61 @@
                      (assoc! events i
                              (update (get events i) :flags conj :linked))))))))
 
+(defn fallback-id
+  "Sometimes you just need an ID to start with."
+  []
+  (bigint (inc (zipf 10))))
+
 (defn probe-lifecycle-map
   "Sometimes we want to find an zipfian-distributed ID that's both in a
-  collection of IDs and also has a particular lifecycle state. This tries to
+  set of IDs and also has a particular lifecycle state. This tries to
   find an ID in `ids` and which, in `lifecycle-map`, is mostly seen or likely,
   as opposed to unlikely or imagined."
   [ids lifecycle-map]
   (let [n   (b/size ids)
-        ; What function (match? lifecycle-map id) will tell us if we won?
-        match? (condp < (dg/double)
-                 0.6 lm/seen?
-                 0.1 lm/likely?
-                 lm/unlikely?)]
-    (if (= 0 n)
-      ; Make up something.
-      (bigint (inc (zipf 10)))
-      ; Sample several times, probing linearly for one with the right state.
-      ; Note that a linear scan over hashed keys gives us an unordered
-      ; traversal, so we're hopefully unlikely to see correlated failures
-      ; here.
-      (loop [i      (zipf n)
-             tries  (min n 10)]
-        (let [id (b/nth ids i)]
-          (when (= 0 tries)
-            (info "probe for id failed" id))
-          (if (or (= 0 tries) (match? lifecycle-map id))
-            id ; Done
-            (recur (mod (inc i) n) ; Linear probe
-                   (dec tries))))))))
+        ; Get keys from the lifecycle map.
+        submap (condp < (dg/double)
+                          0.0  lm/seen
+                          0.05 lm/likely
+                               lm/unlikely)
+        submap (submap lifecycle-map)
+        subkeys (bm/keys submap)]
+    (cond ; IDs pool is empty; use anything from the submap
+          (= 0 n)
+          (zipf-nth zipf-skew subkeys (fallback-id))
+
+          ; Submap is empty; fall back to pool
+          (= 0 (b/size submap))
+          (zipf-nth zipf-skew ids (fallback-id))
+
+          ; When one collection is small, just intersect them
+          (or (<= (b/size ids) 128)
+              (<= (b/size subkeys) 128))
+          (zipf-nth zipf-skew
+                    (bs/intersection ids subkeys)
+                    (fallback-id))
+
+          ; Alternate between probing ids and subkeys randomly, looking for
+          ; presence in the other set.
+          true
+          (loop [tries (min n 10)]
+            ; From IDs
+            (if (= 0 tries)
+              (do ;(info "probe for intersection of" (sort ids) "and"
+                  ;      (sort subkeys) "failed\nIntersection: "
+                  ;      (sort (bs/intersection ids subkeys)))
+                  ; TODO: This intersection is probably too expensive for long
+                  ; runs; might need to fall back. I'm still trying to tune
+                  ; this to get something that succeeds reasonably often.
+                  (zipf-nth zipf-skew (bs/intersection ids subkeys)
+                            (fallback-id)))
+              (let [id (zipf-nth ids)]
+                (if (bs/contains? subkeys id)
+                  id
+                  (let [id (zipf-nth subkeys)]
+                    (if (bs/contains? ids id)
+                      id
+                      (recur (dec tries)))))))))))
 
 ; The State encapsulates the information we need to know about the current
 ; state of the database in order to generate new invocations. Mutations are
@@ -270,7 +298,7 @@
 	 ^long timestamp-max  ; The largest timestamp observed
 	 accounts             ; A LifecycleMap of id->account
 	 transfers            ; A LifecycleMap of id->transfer
-	 ledger->account-ids  ; A Bifurcan map of ledger to lists of account IDs.
+	 ledger->account-ids  ; A Bifurcan map of ledger to sets of account IDs.
    pending-transfer-ids ; A Bifurcan set of ids of transfers we intend to
                         ; complete later.
    ; An integer map of processes to the last invocation that process performed.
@@ -291,7 +319,7 @@
             (bm/->entry [(bigint (inc (zipf 10))) nil])))))
 
 	(rand-account-id [this ledger]
-    (probe-lifecycle-map (bm/get ledger->account-ids ledger bl/empty) accounts))
+    (probe-lifecycle-map (bm/get ledger->account-ids ledger bs/empty) accounts))
 
 	(rand-transfer-id [this]
     (let [r (dg/double)]
@@ -384,12 +412,12 @@
        (cond ; Rarely, mismatch
              (< (dg/double) 1/256)  (rand-account-id this ledger)
              (< (dg/double) 1/2)    (:debit-account-id pending)
-             true                   0)
+             true                   0N)
        :credit-account-id
        (cond ; Rarely, mismatch
              (< (dg/double) 1/256)  (rand-account-id this ledger)
              (< (dg/double) 1/2)    (:credit-account-id pending)
-             true                   0)
+             true                   0N)
        :amount
        (cond ; Rarely: try for *more* than we reserved
              (< (dg/double) 1/256)  (+ (:amount pending) (zipf 1000) 1)
@@ -397,7 +425,7 @@
              (< (dg/double) 1/2)    (zipf (:amount pending))
              ; Or the exact amount
              (< (dg/double) 1/2)    (:amount pending)
-             true                   0)
+             true                   0N)
        :ledger            ledger
        :code              (cond ; Rarely: wrong code
                                 (< (dg/double) 1/256) (rand-code this)
@@ -500,9 +528,8 @@
                       (bm/update m
                                  (:ledger account)
                                  (fn append [account-ids]
-                                   (if account-ids
-                                     (bl/add-last account-ids (:id account))
-                                     (bl/list (:id account))))))
+                                   (bs/add (or account-ids bs/empty)
+                                           (:id account)))))
                     ledger->account-ids
                     new-accounts))))
 
