@@ -33,6 +33,7 @@
             [clojure.data.generators :as dg]
             [clojure.math.numeric-tower :refer [lcm]]
             [clojure.tools.logging :refer [info warn]]
+            [dom-top.core :refer [loopr reducer]]
             [jepsen [generator :as gen]
                     [history :as h]
                     [util :as util]]
@@ -206,13 +207,15 @@
 
 (defn chains
   "Takes a vector of events and partitions them into chains with zipfian
-  distributed lengths, setting the :linked flag on events as appropriate."
+  distributed lengths, setting the :linked flag on events as appropriate. Note
+  that chains amplify failure probablities, so we want to be careful about
+  generating mostly chains of length 1."
   [events]
   (let [n (count events)]
     (if (<= n 1)
       events
       (loop [i            0             ; Index
-             chain-length (zipf 2.0 n)  ; How many more events in this chain
+             chain-length (zipf 4 n)  ; How many more events in this chain
              events       (transient events)]
         (cond (= i n)
               ; Done.
@@ -506,11 +509,11 @@
 			 :flags             flags}))
 
   (gen-new-transfer-2 [this id]
-    ; TODO: sometimes try to conclude a non-pending transfer
-    (let [pending (or (bm/get (lm/possible transfers)
-                              (probe-lifecycle-map pending-transfer-ids
-                                                   transfers)
-                              nil)
+    (let [pending-id (zipf-nth zipf-skew pending-transfer-ids
+                               ; If we can't do a pending ID, try any transfer
+                               ; ID
+                               (rand-transfer-id this))
+          pending (or (bm/get (lm/possible transfers) pending-id nil)
                       ; Make up a transfer that doesn't exist
                       (gen-new-transfer-1 this (rand-transfer-id this)))
           ledger (if (< (dg/double) 1/256)
@@ -672,6 +675,8 @@
 			(assoc this
 						 :next-id   (inc (reduce max next-id ids))
 						 :transfers (reduce lm/add-unlikely transfers new-transfers)
+             ; As soon as we try a transfer, it's something we could try to
+             ; finish
 						 :pending-transfer-ids
              (->> new-transfers
                   (filter (comp :pending :flags))
@@ -680,15 +685,33 @@
 
   (add-new-transfers [this new-transfers results p]
     ; Zip through results and mark failures as unlikely
+    (let [[transfers pending-transfer-ids]
+          (bireduce (fn [[transfers pending-transfer-ids] transfer result]
+                      (let [id (:id transfer)]
+                        (case result
+                          ; When we get an OK result, we know this transfer is
+                          ; likely
+                          (:ok :exists)
+                          [(lm/is-likely transfers id)
+                           ; If this transfer completed something, we should
+                           ; (mostly) remove it from the pending set.
+                           (let [p (:pending-id transfer)]
+                             (if (or (nil? p) (< (dg/double) 0.05))
+                               pending-transfer-ids
+                               (bs/remove pending-transfer-ids p)))]
+
+                          ; When we get a failure, we say it's unseen
+                          ; we mostly don't try to complete it.
+                          [(lm/is-unseen transfers p id)
+                           (if (< (dg/double) 0.05)
+                             pending-transfer-ids
+                             (bs/remove pending-transfer-ids id))])))
+                    [transfers pending-transfer-ids]
+                    new-transfers
+                    results)]
     (assoc this
-           :transfers
-           (bireduce (fn [transfers transfer result]
-                       (case result
-                         (:ok :exists) (lm/is-likely transfers (:id transfer))
-                                       (lm/is-unseen transfers p (:id transfer))))
-                     transfers
-                     new-transfers
-                     results)))
+           :transfers            transfers
+           :pending-transfer-ids pending-transfer-ids)))
 
 	(read-accounts [this results]
 		(let [timestamps (keep :timestamp results)]
@@ -731,21 +754,37 @@
 						 :timestamp-min (reduce min timestamp-min timestamps)
 						 :timestamp-max (reduce max timestamp-max timestamps)
              :transfers
-						 (reduce lm/is-seen transfers (keep :id results)))))
+						 (reduce lm/is-seen transfers (keep :id results))
+             ; If we see something pending, push it back into the pending set
+             :pending-transfer-ids
+             (->> results
+                  (filter (comp :pending :flags))
+                  (map :id)
+                  (binto bs/add pending-transfer-ids)))))
 
   (read-transfers [this ids results]
+    ; First incorporate positive reads of transfers
     (let [this' (read-transfers this results)]
-      ; Incorporate negative reads
-      (assoc this' :transfers
-             (bireduce (fn [transfers id result]
-                         (if result
-                           transfers
-                           ; Each failed read has a 50% chance to knock this
-                           ; out of the likely pool.
-                           (lm/is-unseen transfers 0.5 id)))
-                       (:transfers this')
-                       ids
-                       results))))
+      ; Now, negative reads
+      (let [[transfers pending-transfer-ids]
+            (bireduce (fn [[transfers pending-transfer-ids :as pair] id result]
+                        (if result
+                          pair
+                          ; Each failed read has a 50% chance to knock this out
+                          ; of the likely pool
+                          [(lm/is-unseen transfers 0.5 id)
+                           ; And likewise, if we fail to read something, make
+                           ; it less likely we'll try to complete it
+                           (if (< (dg/double) 0.5)
+                             pending-transfer-ids
+                             (bs/remove pending-transfer-ids id))]))
+                      [(:transfers this')
+                       (:pending-transfer-ids this')]
+                      ids
+                      results)]
+        (assoc this'
+               :transfers transfers
+               :pending-transfer-ids pending-transfer-ids))))
 
   (log-invoke [this invoke]
     (update this :process->invoke bim/put (:process invoke) invoke)))
@@ -933,7 +972,8 @@
 			a   (when (:create-accounts fs)       create-accounts-gen)
 			t   (when (:create-transfers fs)      create-transfers-gen)
 			r   (r-gen opts)
-      ;a   debug-gen-gen)))
+      ;a   debug-gen-gen
+      )))
 
 (defn rw-threads
 	"Given n nodes and c threads, how many threads should do reads *and* writes?"
