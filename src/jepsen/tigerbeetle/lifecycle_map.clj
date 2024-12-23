@@ -8,6 +8,7 @@
   and do not see it. We call these records *unlikely*, and other unseen records
   *likely*. When trying to read and update objects, we want to focus our
   efforts mainly on the seen and likely ones, not the unlikely ones."
+  (:refer-clojure :exclude [empty])
   (:require [bifurcan-clj [core :as b]
                           [list :as bl]
                           [map :as bm]
@@ -97,10 +98,18 @@
 ;; Lifecycle maps
 
 (definterface+ ILifecycleMap
-  (is-possible [m x]
+  (add-likely [m x]
+             [m id x]
+             "Adds a likely record to the map. In the two-arity form,
+             expects x to have a key (:id x).")
+
+  (add-unlikely [m x]
                [m id x]
-                 "Adds a possible record to the map. In the two-arity form,
-                 expects x to have a key (:id x).")
+               "Adds a unlikely record to the map. In the two-arity form,
+               expects x to have a key (:id x)")
+
+  (is-likely [m id]
+             "Indicates that an ID is actually likely.")
 
   (is-seen [m id]
            "Indicates that we positively observed the given id.")
@@ -139,11 +148,37 @@
 ; unlikely  - Unseen and unlikely
 (defrecord LifecycleMap [seen likely unlikely]
   ILifecycleMap
-  (is-possible [m x]
-    (is-possible m (:id x) x))
+  (add-likely [m x]
+    (add-likely m (:id x) x))
 
-  (is-possible [m id x]
-    (LifecycleMap. seen (bm/put likely id x) unlikely))
+  (add-likely [m id x]
+    (if (or (bm/contains? seen id)
+            (bm/contains? likely id)
+            (bm/contains? unlikely id))
+      (throw (IllegalStateException. (str "ID " (pr-str id) "already exists")))
+      (LifecycleMap. seen (bm/put likely id x) unlikely)))
+
+  (add-unlikely [this x]
+    (add-unlikely this (:id x) x))
+
+  (add-unlikely [this id x]
+    (if (or (bm/contains? seen id)
+            (bm/contains? likely id)
+            (bm/contains? unlikely id))
+      (throw (IllegalStateException. (str "ID " (pr-str id) "already exists")))
+      (LifecycleMap. seen likely (bm/put unlikely id x))))
+
+  (is-likely [this id]
+    (if (or (bm/contains? likely id)
+            (bm/contains? seen id))
+      this
+      (if-let [x (bm/get unlikely id)]
+        (LifecycleMap. seen
+                       (bm/put likely id x)
+                       (bm/remove unlikely id))
+        (throw (IllegalStateException.
+                 (str "Can't make ID likely that was never added: "
+                      (pr-str id)))))))
 
   (is-seen [this id]
     (if (bm/contains? seen id)
@@ -197,6 +232,9 @@
   "Constructs an empty lifecycle map."
   []
   (LifecycleMap. bm/empty bm/empty bm/empty))
+
+(def empty
+  (lifecycle-map))
 
 (defn debug
   "A debugging representation suitable for logging."

@@ -38,7 +38,88 @@
                     [util :as util]]
             [jepsen.tigerbeetle [core :refer [bireduce]]
                                 [lifecycle-map :as lm]]
-            [potemkin :refer [definterface+]]))
+            [potemkin :refer [definterface+]])
+  (:import (jepsen.tigerbeetle.lifecycle_map LifecycleMap)))
+
+(defn rand-weighted-index
+	"Takes a total weight and a vector of weights for a weighted discrete
+ distribution and generates a random index into those weights, with
+ probability proportionate to weight. Returns -1 when total-weight is 0."
+  ([weights]
+   (rand-weighted-index (reduce + weights) weights))
+  ([^long total-weight weights]
+   (if (= 0 total-weight)
+     -1
+     (let [r (dg/long 0 total-weight)]
+       (loop [i   0
+              sum 0]
+         (let [sum' (+ sum (weights i))]
+           (if (< r sum')
+             i
+             (recur (inc i) sum'))))))))
+
+(defrecord WeightedMix [^long total-weight  ; Total weight
+												weights             ; Vector of weights
+												gens                ; Vector of generators
+												^long i]            ; Index of current weight/gen
+	gen/Generator
+	(op [this test ctx]
+		(when-not (= 0 (count gens))
+			(if-let [[op gen'] (gen/op (nth gens i) test ctx)]
+				; TODO: handle :pending
+				[op (WeightedMix. total-weight
+													weights
+													(assoc gens i gen')
+													(long (rand-weighted-index total-weight weights)))]
+				; Out of ops from this gen; compact and retry.
+				(let [total-weight' (- total-weight (weights i))
+							weights'      (gen/dissoc-vec weights i)
+							gens'         (gen/dissoc-vec gens i)
+							i'            (rand-weighted-index total-weight' weights')]
+					(gen/op (WeightedMix. total-weight' weights' gens' i') test ctx)))))
+
+	(update [this test ctx event]
+		; Propagate to each gen
+		(when-not (= 0 (count gens))
+			(WeightedMix. total-weight
+										weights
+										(mapv #(gen/update % test ctx event) gens)
+										i))))
+
+(defn long-weights
+	"Takes an array of rational weights and scales them up such that all are
+ integers. Approximate for floats."
+	[weights]
+	(let [denom (fn denominator+ [x]
+								(cond (integer? x) 1
+											(ratio? x) (denominator x)
+											(float? x) (Math/round (/ x))))
+				m (->> weights
+							 (map denom)
+							 (reduce lcm 1))]
+		(mapv (fn scale [x]
+						(let [s (* m x)]
+							(cond (integer? s)  s
+										(float? s)    (Math/round s)
+										true          (throw (RuntimeException.
+																					 (str "How did we even get "
+																								(class s) "x" (pr-str s)))))))
+					weights)))
+
+(defn weighted-mix
+  "A generator which combines several generators in a random, weighted mixture.
+  Takes a flat series of `weight gen` pairs: a generator with weight 6 is
+  chosen three times as often as one with weight 2. Updates are propagated to
+  all generators."
+	[& weight-gens]
+	(assert (even? (count weight-gens)))
+	(when (seq weight-gens)
+		(let [weight-gens  (partition 2 weight-gens)
+					weights      (long-weights (map first weight-gens))
+					total-weight (reduce + weights)
+					gens         (mapv second weight-gens)]
+			(WeightedMix. total-weight weights gens
+										(rand-weighted-index total-weight weights)))))
 
 (defn b-inverse-cdf
   "Inverse cumulative distribution function for the zipfian bounding function
@@ -95,6 +176,15 @@
      not-found
      (zipf-nth skew xs))))
 
+(defn zipf-nth-many
+  "Selects a random element from a vector of n Bifurcan collections. Uniformly
+  distributed between collections, Zipfian within each collection."
+  [xs not-found]
+  (let [i (rand-weighted-index (mapv b/size xs))]
+    (if (= i -1)
+      not-found
+      (zipf-nth (nth xs i) not-found))))
+
 (defn binto
   "Generic `into` for Bifurcan collections. Takes a conj function (e.g.
   bs/add), a collection to add to, and a reducible of things to add. Returns
@@ -150,6 +240,18 @@
   "Sometimes you just need an ID to start with."
   []
   (bigint (inc (zipf 10))))
+
+(defn account-id->ledger
+  "Returns the ledger for a specific account ID."
+  [id]
+  (let [h (hash id)
+        m (mod h 100)]
+    ; A hardcoded Zipfian distribution over 3 ledgers. Chosen to align with
+    ; rand-ledger-id.
+    (condp < m
+      46 1
+      18 2
+         3)))
 
 (defn probe-lifecycle-map
   "Sometimes we want to find an zipfian-distributed ID that's both in a
@@ -229,6 +331,9 @@
                   "Generates a random timestamp likely to be within the range
                   of timestamps for the database.")
 
+  (get-account [state id]
+               "Look up our local cache of an account by ID.")
+
   (gen-new-accounts [state n]
                     "Generates a series of n new accounts.")
 
@@ -296,9 +401,9 @@
 	 next-id              ; The next ID we'll hand out
 	 ^long timestamp-min  ; The smallest timestamp observed
 	 ^long timestamp-max  ; The largest timestamp observed
-	 accounts             ; A LifecycleMap of id->account
 	 transfers            ; A LifecycleMap of id->transfer
-	 ledger->account-ids  ; A Bifurcan map of ledger to sets of account IDs.
+   ledger->accounts     ; A Bifurcan map of a ledger to a LifeCycleMap of
+                        ; accounts
    pending-transfer-ids ; A Bifurcan set of ids of transfers we intend to
                         ; complete later.
    ; An integer map of processes to the last invocation that process performed.
@@ -308,27 +413,32 @@
 
 	IState
 	(rand-account-id [this]
-    (let [r (dg/double)]
-      (bm/key
-        (or ; Mostly seen & likely accounts
-            (when (< 0.6 r) (zipf-nth zipf-skew (lm/seen accounts)   nil))
-            (when (< 0.1 r) (zipf-nth zipf-skew (lm/likely accounts) nil))
-            ; Sometimes an unlikely account
-            (zipf-nth 1.0001 (lm/unlikely accounts) nil)
-            ; If no options, make up a key
-            (bm/->entry [(bigint (inc (zipf 10))) nil])))))
+    (rand-account-id this (rand-ledger this)))
 
 	(rand-account-id [this ledger]
-    (probe-lifecycle-map (bm/get ledger->account-ids ledger bs/empty) accounts))
+    (let [accounts (bm/get ledger->accounts ledger lm/empty)
+          r (dg/double)]
+      (bm/key
+        ; Note: account IDs are very often resolved to seen quickly, which
+        ; means the chances that we have *any* likely accounts is low. We try a
+        ; likely account first, then fall back to seen. This means that during
+        ; the window of uncertainty for an account, we have a high chance to
+        ; try it, but we *don't* fall back to unlikely IDs as soon as that
+        ; account is read.
+        (or (when (< 0.4 r)  (zipf-nth zipf-skew (lm/likely accounts) nil))
+            (when (< 0.05 r) (zipf-nth zipf-skew (lm/seen accounts)   nil))
+            ; Sometimes an unlikely account
+            (zipf-nth zipf-skew (lm/unlikely accounts) nil)
+            ; If no options, make up a key
+            (bm/->entry [(fallback-id) nil])))))
 
 	(rand-transfer-id [this]
     (let [r (dg/double)]
       (bm/key
-        (or ; Mostly seen and likely
-            (when (< 0.6 r) (zipf-nth zipf-skew (lm/seen transfers)   nil))
-            (when (< 0.1 r) (zipf-nth zipf-skew (lm/likely transfers) nil))
-            ; Sometimes unlikely
-            (zipf-nth zipf-skew (lm/unlikely accounts) nil)
+        (or (when (< 0.4 r)  (zipf-nth zipf-skew (lm/likely transfers) nil))
+            (when (< 0.05 r) (zipf-nth zipf-skew (lm/seen transfers)   nil))
+            ; Rarely, unlikely
+            (zipf-nth zipf-skew (lm/unlikely transfers) nil)
             ; Make something up
             (bm/->entry [(bigint (inc (zipf 10))) nil])))))
 
@@ -352,12 +462,17 @@
 					true
 					(System/nanoTime)))
 
+  (get-account [this id]
+    (-> (bm/get ledger->accounts (account-id->ledger id) lm/empty)
+        lm/possible
+        (bm/get id nil)))
+
 	(gen-new-accounts [this n]
 		(let [ids (range next-id (+ next-id n))]
 			(->> ids
 					 (mapv (fn [id]
 									 {:id        id
-										:ledger    (rand-ledger this)
+										:ledger    (account-id->ledger id)
 										:code      (rand-code this)
 										:user-data (rand-user-data this)
 										:flags     #{}}))
@@ -366,7 +481,7 @@
 	(gen-new-transfer-1 [this id]
 		(let [debit-account-id  (rand-account-id this)
           ; NB: The account ID we generate might be fake!
-          debit-account     (bm/get (lm/possible accounts) debit-account-id nil)
+          debit-account     (get-account this debit-account-id)
 					ledger            (:ledger debit-account (rand-ledger this))
 					; Mostly generate distinct debit/credit accounts
 					credit-account-id (loop [tries 10]
@@ -519,37 +634,44 @@
 				(assoc :code (rand-code this)))))
 
 	(add-new-accounts [this new-accounts]
+    ; Just created; record possible existence.
 		(let [ids (mapv :id new-accounts)]
 			(assoc this
-						 :next-id             (inc (reduce max next-id ids))
-						 :accounts            (reduce lm/is-possible accounts new-accounts)
-						 :ledger->account-ids
-             (binto (fn track-ledger [m account]
-                      (bm/update m
+						 :next-id (inc (reduce max next-id ids))
+             :ledger->accounts
+             (binto (fn ledgers [ledger->accounts account]
+                      (bm/update ledger->accounts
                                  (:ledger account)
-                                 (fn append [account-ids]
-                                   (bs/add (or account-ids bs/empty)
-                                           (:id account)))))
-                    ledger->account-ids
-                    new-accounts))))
+                                 (fn add [accounts]
+                                   (lm/add-unlikely (or accounts lm/empty)
+                                                    account))))
+               ledger->accounts
+               new-accounts))))
 
   (add-new-accounts [this new-accounts results p]
-    ; Zip through results and mark failures as unlikely.
+    ; Zip through results, marking as likely or unseen
     (assoc this
-           :accounts
-           (bireduce (fn [accounts account result]
-                       (case result
-                         (:ok :exists) accounts
-                         (lm/is-unseen accounts p (:id account))))
-                     accounts
-                     new-accounts
-                     results)))
+           :ledger->accounts
+           (b/forked
+             (bireduce (fn [ledger->accounts account result]
+                         (let [id (:id account)]
+                           (bm/update ledger->accounts
+                                      (:ledger account)
+                                      (fn add [accounts]
+                                        (let [accounts (or accounts lm/empty)]
+                                          (case result
+                                            (:ok :exists)
+                                            (lm/is-likely accounts id)
+                                            (lm/is-unseen accounts p id)))))))
+                       (b/linear ledger->accounts)
+                       new-accounts
+                       results))))
 
 	(add-new-transfers [this new-transfers]
 		(let [ids (mapv :id new-transfers)]
 			(assoc this
 						 :next-id   (inc (reduce max next-id ids))
-						 :transfers (reduce lm/is-possible transfers new-transfers)
+						 :transfers (reduce lm/add-unlikely transfers new-transfers)
 						 :pending-transfer-ids
              (->> new-transfers
                   (filter (comp :pending :flags))
@@ -562,8 +684,8 @@
            :transfers
            (bireduce (fn [transfers transfer result]
                        (case result
-                         (:ok :exists) transfers
-                         (lm/is-unseen transfers p (:id transfer))))
+                         (:ok :exists) (lm/is-likely transfers (:id transfer))
+                                       (lm/is-unseen transfers p (:id transfer))))
                      transfers
                      new-transfers
                      results)))
@@ -573,21 +695,33 @@
 			(assoc this
 						 :timestamp-min (reduce min timestamp-min timestamps)
 						 :timestamp-max (reduce max timestamp-max timestamps)
-						 :accounts
-						 (reduce lm/is-seen accounts (keep :id results)))))
+						 :ledger->accounts
+             (reduce (fn [ledger->accounts id]
+                       (bm/update ledger->accounts
+                                  (account-id->ledger id)
+                                  lm/is-seen
+                                  id))
+                     ledger->accounts
+                     (keep :id results)))))
 
   (read-accounts [this ids results]
     (let [this' (read-accounts this results)]
       ; Incorporate negative reads
       (assoc this'
-             :accounts
-             (bireduce (fn [accounts id result]
+             :ledger->accounts
+             (bireduce (fn [ledger->accounts id result]
                          (if result
-                           accounts
-                           ; Each failed read has a 50% chance to knock this
-                           ; out of the likely pool.
-                           (lm/is-unseen accounts 0.5 id)))
-                       (:accounts this')
+                           ; Positive read; already handled
+                           ledger->accounts
+                           ; Negative read
+                           (bm/update ledger->accounts
+                                      (account-id->ledger id)
+                                      (fn [accounts]
+                                        ; Each failed read has a 50% chance to
+                                        ; knock this out of the likely pool.
+                                        (lm/is-unseen (or accounts lm/empty)
+                                                      0.5 id)))))
+                       (:ledger->accounts this')
                        ids
                        results))))
 
@@ -623,10 +757,9 @@
 		{:next-id              1N
 		 :timestamp-min        Long/MAX_VALUE
 		 :timestamp-max        Long/MIN_VALUE
-		 :accounts             (lm/lifecycle-map)
 		 :transfers            (lm/lifecycle-map)
 		 :pending-transfer-ids bs/empty
-		 :ledger->account-ids  bm/empty
+		 :ledger->accounts     bm/empty
      :process->invoke      (bim/int-map)}))
 
 ; A generator which maintains the state and ensures its wrapped generator has
@@ -763,83 +896,15 @@
 	{:f       :get-account-transfers
 	 :value   (gen-account-filter (:state ctx))})
 
-(defn rand-weighted-index
-	"Takes a total weight and a vector of weights for a weighted discrete
- distribution and generates a random index into those weights, with
- probability proportionate to weight. Returns -1 when total-weight is 0."
-	[^long total-weight weights]
-	(if (= 0 total-weight)
-		-1
-		(let [r (dg/long 0 total-weight)]
-			(loop [i   0
-						 sum 0]
-				(let [sum' (+ sum (weights i))]
-					(if (< r sum')
-						i
-						(recur (inc i) sum')))))))
-
-(defrecord WeightedMix [^long total-weight  ; Total weight
-												weights             ; Vector of weights
-												gens                ; Vector of generators
-												^long i]            ; Index of current weight/gen
-	gen/Generator
-	(op [this test ctx]
-		(when-not (= 0 (count gens))
-			(if-let [[op gen'] (gen/op (nth gens i) test ctx)]
-				; TODO: handle :pending
-				[op (WeightedMix. total-weight
-													weights
-													(assoc gens i gen')
-													(long (rand-weighted-index total-weight weights)))]
-				; Out of ops from this gen; compact and retry.
-				(let [total-weight' (- total-weight (weights i))
-							weights'      (gen/dissoc-vec weights i)
-							gens'         (gen/dissoc-vec gens i)
-							i'            (rand-weighted-index total-weight' weights')]
-					(gen/op (WeightedMix. total-weight' weights' gens' i') test ctx)))))
-
-	(update [this test ctx event]
-		; Propagate to each gen
-		(when-not (= 0 (count gens))
-			(WeightedMix. total-weight
-										weights
-										(mapv #(gen/update % test ctx event) gens)
-										i))))
-
-(defn long-weights
-	"Takes an array of rational weights and scales them up such that all are
- integers. Approximate for floats."
-	[weights]
-	(let [denom (fn denominator+ [x]
-								(cond (integer? x) 1
-											(ratio? x) (denominator x)
-											(float? x) (Math/round (/ x))))
-				m (->> weights
-							 (map denom)
-							 (reduce lcm 1))]
-		(mapv (fn scale [x]
-						(let [s (* m x)]
-							(cond (integer? s)  s
-										(float? s)    (Math/round s)
-										true          (throw (RuntimeException.
-																					 (str "How did we even get "
-																								(class s) "x" (pr-str s)))))))
-					weights)))
-
-(defn weighted-mix
-	"A generator which combines several generators in a random, weighted mixture.
- Takes a flat series of `weight gen` pairs: a generator with weight 6 is chosen
- three times as often as one with weight 2. Updates are propagated to all
- generators."
-	[& weight-gens]
-	(assert (even? (count weight-gens)))
-	(when (seq weight-gens)
-		(let [weight-gens  (partition 2 weight-gens)
-					weights      (long-weights (map first weight-gens))
-					total-weight (reduce + weights)
-					gens         (mapv second weight-gens)]
-			(WeightedMix. total-weight weights gens
-										(rand-weighted-index total-weight weights)))))
+(defn debug-gen-gen
+  "A generator which emits :debug-gen operations whose invoke value tells us
+  about the current state of the generator. Helpful for figuring out what the
+  generator thought was going on during the test."
+  [test {:keys [state] :as ctx}]
+  {:f     :debug-gen
+   :value {:ledger->accounts
+           (update-vals (datafy (:ledger->accounts state))
+                        lm/debug)}})
 
 (defn r-gen
 	"Generator purely of read operations during the main phase."
@@ -867,7 +932,8 @@
 		(weighted-mix
 			a   (when (:create-accounts fs)       create-accounts-gen)
 			t   (when (:create-transfers fs)      create-transfers-gen)
-			r   (r-gen opts))))
+			r   (r-gen opts)
+      ;a   debug-gen-gen)))
 
 (defn rw-threads
 	"Given n nodes and c threads, how many threads should do reads *and* writes?"
@@ -931,15 +997,19 @@
   (reify gen/Generator
     (op [this test ctx]
       (gen/op
-        (->> (get (:state ctx) lifecycle-map-field)
-             lm/unseen
-             bm/keys
-             sort
-             (partition-all 128)
-             (reduce (fn [m chunk]
-                       (bm/put m (first chunk) (vec chunk)))
-                     bm/empty)
-             (FinalReadGen. f))
+        (let [lm (get (:state ctx) lifecycle-map-field)
+              ; Ugh this is SUCH a hack, since accounts and transfers
+              ; are now represented differently.
+              unseen (if (instance? LifecycleMap lm)
+                       (bm/keys (lm/unseen lm))
+                       (mapcat (comp bm/keys lm/unseen bm/value) lm))]
+          (->> unseen
+               sort
+               (partition-all 128)
+               (reduce (fn [m chunk]
+                         (bm/put m (first chunk) (vec chunk)))
+                       bm/empty)
+               (FinalReadGen. f)))
         test
         ctx))
 
@@ -949,7 +1019,7 @@
 (defn final-accounts-gen
   "A generator that tries to observe every unseen account."
   []
-  (final-*-gen :accounts :lookup-accounts))
+  (final-*-gen :ledger->accounts :lookup-accounts))
 
 (defn final-transfers-gen
   "A generator that tries to observe every unseen transfer."
@@ -960,5 +1030,6 @@
   "Final generator. Makes sure we try to observe every unseen account and
   transfer."
   []
-  [(final-accounts-gen)
+  [;{:f :debug-gen}
+   (final-accounts-gen)
    (final-transfers-gen)])

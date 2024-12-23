@@ -1,10 +1,18 @@
 (ns jepsen.tigerbeetle.repl
   "The REPL drops you here."
-  (:require [clojure.tools.logging :refer [info warn]]
+  (:require [bifurcan-clj [core :as b]
+                          [list :as bl]
+                          [map :as bm]
+                          [set :as bs]]
+            [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
-            [jepsen [history :as h]
+            [jepsen [generator :as gen]
+                    [history :as h]
                     [store :as store]]
-            [jepsen.tigerbeetle.core :refer :all]
+            [jepsen.generator.context :as ctx]
+            [jepsen.tigerbeetle [core :refer :all]
+                                [lifecycle-map :as lm]]
+            [jepsen.tigerbeetle.workload [generator :as tgen]]
             [tesser.core :as t]))
 
 (defn reads-of
@@ -49,6 +57,31 @@
        (t/into [])
        (h/tesser history)))
 
+(defn writes-with-result
+  "Filters a history to just those ops with a specific result code. Filters
+  events to just those events too. Returns [invoke, ok] pairs."
+  [result history]
+  (h/ensure-pair-index history)
+  (->> (t/filter h/invoke?)
+       (t/filter (h/has-f? write-fs))
+       (t/keep
+         (fn per-op [op]
+           (let [op' (h/completion history op)
+                 ; Build up filtered values
+                 [v v'] (bireduce (fn [[v v' :as pair] event res]
+                                    (if (= result res)
+                                      [(conj v  event)
+                                       (conj v' res)]
+                                      pair))
+                                  [[] []]
+                                  (:value op)
+                                  (:value op'))]
+             (when (seq v)
+               [(assoc op :value v)
+                (assoc op' :value v')]))))
+       (t/into [])
+       (h/tesser history)))
+
 (defn find-by
   "Finds a single account or transfer by a given predicate."
   [pred history]
@@ -74,8 +107,8 @@
   (find-by #(= ts (:timestamp %)) history))
 
 (defn find-create
-  "Finds the invocation operation that created a given ID or account map or
-  transfer map."
+  "Finds the [invocation completion] operation that created a given ID or
+  account map or transfer map."
   [id-or-map history]
   (let [id (if (map? id-or-map)
              (:id id-or-map)
@@ -85,10 +118,12 @@
     (->> (t/filter h/invoke?)
          (t/filter (h/has-f? #{:create-accounts
                                :create-transfers}))
-         (t/filter (fn [op]
-                     (some #(= id (:id %))
-                           (:value op))))
-         (t/first)
+         (t/keep (fn [op]
+                   (when (some #(= id (:id %))
+                               (:value op))
+                     [op (h/completion history op)])))
+         ;(t/first)
+         (t/into [])
          (h/tesser history))))
 
 (defn transfers-debiting
@@ -111,3 +146,21 @@
        (t/mapcat :transfers)
        (t/into [])
        (h/tesser history)))
+
+(defn result-times
+  "Returns a vector of times, in seconds, of a specific kind of result code
+  (e.g. :debit-account-not-found)"
+  [result-code history]
+  :TODO
+  )
+
+(defn reconstruct-generator
+  "Reconstructs the generator state from a test and history."
+  ([test]
+   (reconstruct-generator test (:history test)))
+  ([test history]
+   (let [ctx (ctx/context test)]
+     (reduce (fn [gen op]
+               (gen/update gen test ctx op))
+             (tgen/wrap-gen (tgen/gen test))
+             history))))

@@ -110,7 +110,7 @@
 
   (testing "possible"
     (let [m (-> (lifecycle-map)
-                (is-possible :x 0))]
+                (add-likely :x 0))]
       (is (d= {:x 0} (possible m)))
       (is (d= {} (seen m)))
       (is (d= {:x 0} (unseen m)))
@@ -119,8 +119,8 @@
 
   (testing "unseen"
     (let [m (-> (lifecycle-map)
-                (is-possible :x 0)
-                (is-possible :y 1)
+                (add-likely :x 0)
+                (add-likely :y 1)
                 (is-unseen 0 :x)  ; 0 probability
                 (is-unseen 1 :y))] ; 1 probability
       (is (d= {:x 0, :y 1} (possible m)))
@@ -131,8 +131,8 @@
 
   (testing "seen"
     (let [m (-> (lifecycle-map)
-                (is-possible :x 0)
-                (is-possible :y 1)
+                (add-likely :x 0)
+                (add-likely :y 1)
                 (is-seen :y)
                 (is-unseen 0 :x)
                 (is-unseen 1 :y)

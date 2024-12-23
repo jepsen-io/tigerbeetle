@@ -114,7 +114,8 @@
                :lookup-transfers      (c/lookup-transfers conn value)
                :query-accounts        (c/query-accounts conn value)
                :query-transfers       (c/query-transfers conn value)
-               :get-account-transfers (c/get-account-transfers conn value)))
+               :get-account-transfers (c/get-account-transfers conn value)
+               :debug-gen             {:type :info, :value nil}))
       (catch [:type :timeout] e
         (assoc op :type :info, :value nil, :error :timeout))))
 
