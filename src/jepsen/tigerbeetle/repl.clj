@@ -57,10 +57,11 @@
        (t/into [])
        (h/tesser history)))
 
-(defn writes-with-result
-  "Filters a history to just those ops with a specific result code. Filters
-  events to just those events too. Returns [invoke, ok] pairs."
-  [result history]
+(defn writes-with
+  "Filters a history to just those writes where (f event result) is true.
+  Returns [invoke, ok] pairs, where values are filtered to just those specific
+  writes."
+  [f history]
   (h/ensure-pair-index history)
   (->> (t/filter h/invoke?)
        (t/filter (h/has-f? write-fs))
@@ -69,7 +70,7 @@
            (let [op' (h/completion history op)
                  ; Build up filtered values
                  [v v'] (bireduce (fn [[v v' :as pair] event res]
-                                    (if (= result res)
+                                    (if (f event res)
                                       [(conj v  event)
                                        (conj v' res)]
                                       pair))
@@ -81,6 +82,20 @@
                 (assoc op' :value v')]))))
        (t/into [])
        (h/tesser history)))
+
+(defn writes-with-result
+  "Filters a history to just those ops with a specific result code. Filters
+  events to just those events too. Returns [invoke, ok] pairs."
+  [result history]
+  (writes-with (fn [event res] (= result res)) history))
+
+(defn writes-finishing
+  "Filters a history to just those writes which posted or voided the given ID.
+  Returns [invoke, ok] pairs."
+  [id history]
+  (assert (instance? clojure.lang.BigInt id))
+  (writes-with (fn [event res] (= id (:pending-id event)))
+               history))
 
 (defn find-by
   "Finds a single account or transfer by a given predicate."

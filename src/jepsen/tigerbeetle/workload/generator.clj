@@ -359,14 +359,16 @@
                     "Called when we invoke create-accounts, to track that these
                     accounts may now exist. The longer form handles when we get
                     a response back from the DB, and marks failed accounts as
-                    unlikely with probability p.")
+                    unlikely with probability p. p=1 means we're completely
+                    confident the operation did not happen.")
 
   (add-new-transfers [state transfers]
                      [state transfers results p]
                      "Called when we invoke create-transfers, to track that
-                     those transfers may now exist. The longer form form
+                     those transfers may now exist. The longer form
                      handles when we get a response back from the DB, and marks
-                     failed transfers as unlikely with probability p.")
+                     failed transfers as unlikely with probability p. p=1 means
+                     we're completely confident the operation did not happen.")
 
   (read-accounts [state accounts]
                  [state ids accounts]
@@ -671,17 +673,18 @@
                        results))))
 
 	(add-new-transfers [this new-transfers]
-		(let [ids (mapv :id new-transfers)]
-			(assoc this
-						 :next-id   (inc (reduce max next-id ids))
-						 :transfers (reduce lm/add-unlikely transfers new-transfers)
-             ; As soon as we try a transfer, it's something we could try to
-             ; finish
-						 :pending-transfer-ids
-             (->> new-transfers
+		(let [ids (mapv :id new-transfers)
+          ; As soon as we submit a pending transfer, it's something we could
+          ; try to finish
+          ptids (->> new-transfers
                   (filter (comp :pending :flags))
                   (map :id)
-                  (binto bs/add pending-transfer-ids)))))
+                  ;((fn [x] (info "Adding pending transfers" (sort x)) x))
+                  (binto bs/add pending-transfer-ids))]
+      (assoc this
+             :next-id   (inc (reduce max next-id ids))
+             :transfers (reduce lm/add-unlikely transfers new-transfers)
+             :pending-transfer-ids ptids)))
 
   (add-new-transfers [this new-transfers results p]
     ; Zip through results and mark failures as unlikely
@@ -695,15 +698,17 @@
                           [(lm/is-likely transfers id)
                            ; If this transfer completed something, we should
                            ; (mostly) remove it from the pending set.
-                           (let [p (:pending-id transfer)]
-                             (if (or (nil? p) (< (dg/double) 0.05))
+                           (let [pid (:pending-id transfer)]
+                             (if (or (nil? pid) (< p (dg/double)))
                                pending-transfer-ids
-                               (bs/remove pending-transfer-ids p)))]
+                               (do (info id "completed transfer" pid
+                                         "; removing from pending-transfer-ids")
+                                   (bs/remove pending-transfer-ids pid))))]
 
                           ; When we get a failure, we say it's unseen
-                          ; we mostly don't try to complete it.
                           [(lm/is-unseen transfers p id)
-                           (if (< (dg/double) 0.05)
+                           ; And (mostly) remove it from the pending txn set.
+                           (if (< p (dg/double))
                              pending-transfer-ids
                              (bs/remove pending-transfer-ids id))])))
                     [transfers pending-transfer-ids]
@@ -755,12 +760,14 @@
 						 :timestamp-max (reduce max timestamp-max timestamps)
              :transfers
 						 (reduce lm/is-seen transfers (keep :id results))
-             ; If we see something pending, push it back into the pending set
-             :pending-transfer-ids
-             (->> results
-                  (filter (comp :pending :flags))
-                  (map :id)
-                  (binto bs/add pending-transfer-ids)))))
+             ; TODO: If we see something pending, and we haven't definitively
+             ; closed it, push it back into the pending set?
+             ;:pending-transfer-ids
+             ;(->> results
+             ;     (filter (comp :pending :flags))
+             ;     (map :id)
+             ;     (binto bs/add pending-transfer-ids))
+             )))
 
   (read-transfers [this ids results]
     ; First incorporate positive reads of transfers
@@ -830,7 +837,8 @@
                  [:invoke :create-transfers]
                  (add-new-transfers state value)
 
-                 ; Completing accounts tells us some may be unlikely
+                 ; Completing accounts tells us some may be unlikely/unseen;
+                 ; we're very confident when we get an OK op with error codes.
                  [:ok :create-accounts]
                  (add-new-accounts state invoke-value value 0.95)
 
@@ -839,8 +847,8 @@
                  (add-new-transfers state invoke-value value 0.95)
 
                  ; A timeout gives us less confidence, but since TigerBeetle
-                 ; basically refuses to ever nack a request, we'll have to
-                 ; handle this often.
+                 ; basically refuses to ever nack a request, we should assume
+                 ; most of these actually fail.
                  [:info :create-accounts]
                  (add-new-accounts state invoke-value nil 0.8)
 

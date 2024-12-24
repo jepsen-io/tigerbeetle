@@ -4,6 +4,7 @@
             [clojure [datafy :refer [datafy]]
                      [pprint :refer [pprint]]
                      [test :refer :all]]
+            [clojure.data.generators :as dg]
             [jepsen [generator :as gen]
                     [history :as h]
                     [util :as util]]
@@ -11,7 +12,8 @@
                               [context :as ctx]]
             [jepsen.tigerbeetle [lifecycle-map :as lm]
                                 [model-test :as mt :refer [a ats t tts]]]
-            [jepsen.tigerbeetle.workload.generator :as g]))
+            [jepsen.tigerbeetle.workload.generator :as g])
+  (:import (java.util Random)))
 
 ; We have our own ideas about ledgers
 (defn reledger
@@ -117,14 +119,14 @@
               ids1 (freqs #(g/rand-account-id s 1))
               ; In ledger 2
               ids2 (freqs #(g/rand-account-id s 2))]
-          ; In ledger 1 we almost always generate 1, since it's likely and 3
-          ; isn't
-          (is (<= 0.90 (ids1 1N) 1))
-          (is (<= 0    (ids1 3N) 0.1))
+          ; In ledger 1 we more often generate 1, since it's likely and 3
+          ; isn't. Not THAT much more likely--nothing is seen yet.
+          (is (<= 0.5 (ids1 1N) 0.7))
+          (is (<= 0.3 (ids1 3N) 0.5))
           ; In ledger 2, there's nothing, so we get zipfian randoms
-          (is (<= 0.6 (ids 1N) 0.75))
-          (is (<= 0.05 (ids 2N) 0.15))
-          (is (<= 0.004 (ids 3N) 0.1))
+          (is (<= 0.3 (ids2 1N) 0.4))
+          (is (<= 0.1 (ids2 2N) 0.2))
+          (is (<= 0.05 (ids2 3N) 0.15))
           )))
 
     (testing "on info"
@@ -138,3 +140,114 @@
         ; Both are now unlikely
         (is (= {} (datafy (lm/likely as ))))
         (is (= {1N a1, 3N a3} (datafy (lm/unlikely as))))))))
+
+(deftest pending-transfer-ids-test
+  (let [t10 (t 10N a1 a2 5N #{:pending})
+        t11 (assoc (t 11N a1 a2 5N #{:post-pending-transfer}) :pending-id 10N)
+        t12 (assoc (t 12N a1 a2 5N #{:void-pending-transfer}) :pending-id 10N)
+        ; Start by doing a pending transfer
+        g (-> g
+              (gen/update test ctx
+                          (h/op {:index 0
+                                 :process 0,
+                                 :type :invoke,
+                                 :f :create-transfers,
+                                 :value [t10]})))]
+    ; As soon as we submit the transfer, we have it recorded as pending.
+    (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))
+
+    ; If the pending transfer completes OK, we leave it in pending
+    (testing "pending ok"
+      (let [g (gen/update g test ctx
+                          (h/op {:index 1
+                                 :process 0
+                                 :type :ok
+                                 :f :create-trasnfers
+                                 :value [:ok]}))]
+        (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
+
+    ; If it succeeds with an error, we mostly pull it out.
+    (binding [dg/*rnd* (Random. 0)]
+      (testing "pending exceeds-debits"
+        (let [g (gen/update g test ctx
+                            (h/op {:index 1
+                                   :process 0
+                                   :type :ok
+                                   :f :create-transfers
+                                   :value [:exceeds-debits]}))]
+          (is (= #{} (datafy (:pending-transfer-ids (:state g))))))))
+
+    ; If it fails, we mostly pull it out
+    (binding [dg/*rnd* (Random. 0)]
+      (testing "pending fails"
+        (let [g (gen/update g test ctx
+                            (h/op {:index 1
+                                   :process 0
+                                   :type :fail
+                                   :f :create-transfers
+                                   :value nil}))]
+          (is (= #{} (datafy (:pending-transfer-ids (:state g))))))))
+
+    ; If it crashes, we mostly remove it (but less often)
+    (binding [dg/*rnd* (Random. 2)]
+      (testing "pending info"
+        (let [g (gen/update g test ctx
+                            (h/op {:index 1
+                                   :process 0
+                                   :type :info
+                                   :f :create-transfers
+                                   :value nil}))]
+          (is (= #{10N} (datafy (:pending-transfer-ids (:state g))))))))
+
+    ; Now what if we complete it?
+    (binding [dg/*rnd* (Random. 0)]
+      (let [g (gen/update g test ctx
+                          (h/op {:index 1
+                                 :process 1
+                                 :type :invoke
+                                 :f :create-transfers
+                                 :value [t11]}))]
+        ; Still here
+        (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))
+
+        ; If we complete the post, remove it (mostly)
+        (testing "post ok"
+          (binding [dg/*rnd* (Random. 123)]
+            (let [g (gen/update g test ctx
+                                (h/op {:index 2
+                                       :process 1
+                                       :type :ok
+                                       :f :create-transfers
+                                       :value [:ok]}))]
+              (is (= #{} (datafy (:pending-transfer-ids (:state g))))))))
+
+        ; If the post has a logical failure, leave it in
+        (testing "post exceeds-debits"
+          (let [g (gen/update g test ctx
+                              (h/op {:index 2
+                                     :process 1
+                                     :type :ok
+                                     :f :create-transfers
+                                     :value [:exceeds-debits]}))]
+          (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
+
+        ; If the post fails, leave it in
+        (testing "post exceeds-debits"
+          (let [g (gen/update g test ctx
+                              (h/op {:index 2
+                                     :process 1
+                                     :type :fail
+                                     :f :create-transfers
+                                     :value nil}))]
+          (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
+
+        ; If the post crashes, leave it in
+        (testing "post exceeds-debits"
+          (let [g (gen/update g test ctx
+                              (h/op {:index 2
+                                     :process 1
+                                     :type :info
+                                     :f :create-transfers
+                                     :value nil}))]
+          (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
+    ))))
