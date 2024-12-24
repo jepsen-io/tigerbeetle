@@ -98,10 +98,9 @@
                         {:db            db
                          :nodes         (:nodes opts)
                          :faults        (:nemesis opts)
-                         :partition     {:targets [:one :primaries :majority]}
-                         :pause         {:targets [:one, :primaries] #_[:one :primaries :majority :all]}
-                         :kill          {:targets #_[:one :primaries :majority :all]
-                                         [:one]}
+                         ;:partition     {:targets [:one ::majority]}
+                         ;:pause         {:targets [:one :primaries :majority :all]}
+                         ;:kill          {:targets [:one :primaries :majority :all]}
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload
@@ -152,7 +151,7 @@
 
 (def cli-opts
   "Command-line option specification"
-  [[nil "--client-nodes MODE" "Whether to connect a client to one node or all nodes."
+  [[nil "--client-nodes MODE" "Whether to connect a client to one node or all nodes. `all` increases the number of operations that succeed, since TigerBeetle generally lets all requests time out on non-leader nodes. However, it might mean missing consistency violations that occur on specific nodes. It also breaks how we do primary node inference, so nemeses that target primaries will target (typically) all nodes instead."
     :default :one
     :parse-fn keyword
     :validate [#{:one :all} "Must be one or all"]]
