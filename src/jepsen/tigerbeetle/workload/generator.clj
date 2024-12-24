@@ -542,7 +542,7 @@
        (cond ; Rarely: try for *more* than we reserved
              (< (dg/double) 1/256)  (+ (:amount pending) (zipf 1000) 1)
              ; Often: try for less
-             (< (dg/double) 1/2)    (zipf (:amount pending))
+             (and post? (< (dg/double) 1/2)) (zipf (:amount pending))
              ; Or the exact amount
              (< (dg/double) 1/2)    (:amount pending)
              true                   0N)
