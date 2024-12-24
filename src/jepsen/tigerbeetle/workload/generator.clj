@@ -513,11 +513,17 @@
 		(let [ids (range next-id (+ next-id n))]
 			(->> ids
 					 (mapv (fn [id]
+                   (let [flags (cond-> #{}
+                                 (< (dg/double) 1/4)
+                                 (conj :debits-must-not-exceed-credits)
+
+                                 (< (dg/double) 1/4)
+                                 (conj :credits-must-not-exceed-debits))]
 									 {:id        id
 										:ledger    (account-id->ledger id)
 										:code      (rand-code this)
 										:user-data (rand-user-data this)
-										:flags     #{}}))
+										:flags     flags})))
 					 chains)))
 
 	(gen-new-transfer-1 [this id]
