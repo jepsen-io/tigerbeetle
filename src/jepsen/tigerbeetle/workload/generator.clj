@@ -548,55 +548,62 @@
 			 :flags             flags}))
 
   (gen-new-transfer-2 [this id]
-    (let [pending-id (zipf-nth zipf-skew pending-transfer-ids
-                               ; If we can't do a pending ID, try any transfer
-                               ; ID
-                               (rand-transfer-id this))
-          pending (or (bm/get (lm/possible transfers) pending-id nil)
-                      ; Make up a transfer that doesn't exist
-                      (gen-new-transfer-1 this (rand-transfer-id this)))
-          ledger (if (< (dg/double) 1/256)
-                   (rand-ledger this)
-                   (:ledger pending))
-          post? (< (dg/double) 1/2)
-          void? (not post?)
-          flags (cond-> #{(if post?
-                            :post-pending-transfer
-                            :void-pending-transfer)})]
-      {:id                id
-       :pending-id        (:id pending)
-       :debit-account-id
-       (cond ; Rarely, mismatch
-             (< (dg/double) 1/256)  (rand-account-id this ledger)
-             (< (dg/double) 1/2)    (:debit-account-id pending)
-             true                   0N)
-       :credit-account-id
-       (cond ; Rarely, mismatch
-             (< (dg/double) 1/256)  (rand-account-id this ledger)
-             (< (dg/double) 1/2)    (:credit-account-id pending)
-             true                   0N)
-       :amount
-       (cond ; Rarely: try for *more* than we reserved
-             (< (dg/double) 1/256)  (+ (:amount pending) (zipf 1000) 1)
-             ; Often: try for less
-             (and post? (< (dg/double) 1/2)) (zipf (:amount pending))
-             ; Or the exact amount
-             (< (dg/double) 1/2)    (:amount pending)
-             true                   0N)
-       :ledger            ledger
-       :code              (cond ; Rarely: wrong code
-                                (< (dg/double) 1/256) (rand-code this)
-                                (< (dg/double) 1/2)   (:code pending)
-                                true                  0)
-       :user-data         (rand-user-data this)
-       :flags             flags}))
+    (when-let [pending-id (zipf-nth zipf-skew pending-transfer-ids
+                               ; If we can't do a pending ID, we've got a small
+                               ; chance to try any transfer ID. There's a good
+                               ; chance that during the test the pending set is
+                               ; empty, so we don't want to do this *too*
+                               ; often.
+                               (when (< (dg/double) 0.05)
+                                 (rand-transfer-id this)))]
+      (let [pending (or (bm/get (lm/possible transfers) pending-id nil)
+                        ; Make up a transfer that doesn't exist
+                        (gen-new-transfer-1 this (rand-transfer-id this)))
+            ledger (if (< (dg/double) 1/256)
+                     (rand-ledger this)
+                     (:ledger pending))
+            post? (< (dg/double) 1/2)
+            void? (not post?)
+            flags (cond-> #{(if post?
+                              :post-pending-transfer
+                              :void-pending-transfer)})]
+        {:id                id
+         :pending-id        (:id pending)
+         :debit-account-id
+         (cond ; Rarely, mismatch
+               (< (dg/double) 1/256)  (rand-account-id this ledger)
+               (< (dg/double) 1/2)    (:debit-account-id pending)
+               true                   0N)
+         :credit-account-id
+         (cond ; Rarely, mismatch
+               (< (dg/double) 1/256)  (rand-account-id this ledger)
+               (< (dg/double) 1/2)    (:credit-account-id pending)
+               true                   0N)
+         :amount
+         (cond ; Rarely: try for *more* than we reserved
+               (< (dg/double) 1/256)  (+ (:amount pending) (zipf 1000) 1)
+               ; Often: try for less
+               (and post? (< (dg/double) 1/2)) (zipf (:amount pending))
+               ; Or the exact amount
+               (< (dg/double) 1/2)    (:amount pending)
+               true                   0N)
+         :ledger            ledger
+         :code              (cond ; Rarely: wrong code
+                                  (< (dg/double) 1/256) (rand-code this)
+                                  (< (dg/double) 1/2)   (:code pending)
+                                  true                  0)
+         :user-data         (rand-user-data this)
+         :flags             flags})))
 
 	(gen-new-transfer [this id]
-		; Single-phase transfers are roughly half pending, so we do second-phase
-		; transfers roughly 1/3 of the time.
+    ; Single-phase transfers are roughly half pending, so in a perfect world
+    ; we'd do second-phase transfers roughly 1/3 of the time.
 		(if (< (dg/double) 2/3)
 			(gen-new-transfer-1 this id)
-			(gen-new-transfer-2 this id)))
+			(or (gen-new-transfer-2 this id)
+          ; If that fails (e.g. because we don't think there's anything
+          ; pending), we shouldn't spin our wheels on useless post/voids.
+          (gen-new-transfer-1 this id))))
 
 	(gen-new-transfers [this n]
 		(let [ids (range next-id (+ next-id n))]
