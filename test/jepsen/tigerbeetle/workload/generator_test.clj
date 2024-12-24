@@ -146,14 +146,16 @@
         t11 (assoc (t 11N a1 a2 5N #{:post-pending-transfer}) :pending-id 10N)
         t12 (assoc (t 12N a1 a2 5N #{:void-pending-transfer}) :pending-id 10N)
         ; Start by doing a pending transfer
-        g (-> g
-              (gen/update test ctx
-                          (h/op {:index 0
-                                 :process 0,
-                                 :type :invoke,
-                                 :f :create-transfers,
-                                 :value [t10]})))]
-    ; As soon as we submit the transfer, we have it recorded as pending.
+        g (binding [dg/*rnd* (Random. 1432564)]
+            (-> g
+                (gen/update test ctx
+                            (h/op {:index 0
+                                   :process 0,
+                                   :type :invoke,
+                                   :f :create-transfers,
+                                   :value [t10]}))))]
+    ; As soon as we submit the transfer, we have a small chance to record it as
+    ; pending.
     (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))
 
     ; If the pending transfer completes OK, we leave it in pending
