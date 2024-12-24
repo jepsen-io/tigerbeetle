@@ -513,12 +513,14 @@
 		(let [ids (range next-id (+ next-id n))]
 			(->> ids
 					 (mapv (fn [id]
-                   (let [flags (cond-> #{}
-                                 (< (dg/double) 1/4)
-                                 (conj :debits-must-not-exceed-credits)
-
-                                 (< (dg/double) 1/4)
-                                 (conj :credits-must-not-exceed-debits))]
+                   (let [exceeds (dg/weighted
+                                   {#{} 128
+                                    #{:debits-must-not-exceed-credits} 32
+                                    #{:credits-must-not-exceed-debits} 32
+                                    #{:debits-must-not-exceed-credits
+                                      :credits-must-not-exceed-debits} 1})
+                         flags (cond-> exceeds
+                                 )]
 									 {:id        id
 										:ledger    (account-id->ledger id)
 										:code      (rand-code this)
@@ -539,7 +541,11 @@
 																	id)))
           ; TODO: other flags
 					flags (cond-> #{}
-									(< (dg/double) 1/2) (conj :pending))]
+                  ; Half of transfers are pending
+									(< (dg/double) 1/2) (conj :pending)
+                  ; Often we use balancing credits/debits
+                  (< (dg/double) 1/3) (conj :balancing-credit)
+                  (< (dg/double) 1/3) (conj :balancing-debit))]
 			{:id                id
 			 :debit-account-id  debit-account-id
 			 :credit-account-id credit-account-id
@@ -570,28 +576,33 @@
                      (:ledger pending))
             post? (< (dg/double) 1/2)
             void? (not post?)
-            flags (cond-> #{(if post?
-                              :post-pending-transfer
-                              :void-pending-transfer)})]
+            flags #{(if post?
+                      :post-pending-transfer
+                      :void-pending-transfer)}]
         {:id                id
          :pending-id        (:id pending)
          :debit-account-id
          (cond ; Rarely, mismatch
-               (< (dg/double) 1/256)  (rand-account-id this ledger)
+               (< (dg/double) 1/1024)  (rand-account-id this ledger)
                (< (dg/double) 1/2)    (:debit-account-id pending)
                true                   0N)
          :credit-account-id
          (cond ; Rarely, mismatch
-               (< (dg/double) 1/256)  (rand-account-id this ledger)
+               (< (dg/double) 1/1024)  (rand-account-id this ledger)
                (< (dg/double) 1/2)    (:credit-account-id pending)
                true                   0N)
          :amount
          (cond ; Rarely: try for *more* than we reserved
-               (< (dg/double) 1/256)  (+ (:amount pending) (zipf 1000) 1)
-               ; Often: try for less
-               (and post? (< (dg/double) 1/2)) (zipf (:amount pending))
-               ; Or the exact amount
-               (< (dg/double) 1/2)    (:amount pending)
+               (< (dg/double) 1/1024)  (+ (:amount pending) (zipf 1000) 1)
+               ; Sometimes try for less. These are zipfian to give us a
+               ; higher chance of succeeding with balancing transfers.
+               (and post? (< (dg/double) 1/4)) (zipf (:amount pending))
+               ; Less often, the exact amount. This is likely to fail often
+               ; because we often generate pending transfers with balancing
+               ; debit/credit.
+               (< (dg/double) 1/16)    (:amount pending)
+               ; Mostly we complete with 0, which works well with balancing
+               ; transfers.
                true                   0N)
          :ledger            ledger
          :code              (cond ; Rarely: wrong code
