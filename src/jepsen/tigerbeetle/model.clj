@@ -1066,15 +1066,23 @@
                      (:balancing-debit flags)
                      (min (max 0 (- debit-credits debit-debits+))))
 
-           ; Account balance constraints
+           ; Account balance constraints. Note that post/void constraints are
+           ; enforced on pending txns--we don't check them again, because
+           ; post/void can never increase pending + posted, whereas the formula
+           ; from the docs, which we use here, would double-count the transfer
+           ; amount: once at pending, and again at post/void.
            credit-flags (:flags credit-account)
            debit-flags  (:flags debit-account)
-           _ (when (and (:credits-must-not-exceed-debits credit-flags)
-                        (< credit-debits (+ credit-credits+ amount')))
-               (return :exceeds-debits))
-           _ (when (and (:debits-must-not-exceed-credits debit-flags)
+           _ (when (and (not post?)
+                        (not void?)
+                        (:debits-must-not-exceed-credits debit-flags)
                         (< debit-credits (+ debit-debits+ amount')))
                (return :exceeds-credits))
+           _ (when (and (not post?)
+                        (not void?)
+                        (:credits-must-not-exceed-debits credit-flags)
+                        (< credit-debits (+ credit-credits+ amount')))
+               (return :exceeds-debits))
 
            ; Balance overflows
            _ (cond

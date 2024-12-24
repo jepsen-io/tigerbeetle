@@ -1185,28 +1185,55 @@
     (is (consistent?
           (-> init0
               (ca-step [a1 a2] [:ok :ok])
-              ; We can credit a1, and debit it up to posted+pending, but no further
+              ; We can credit a1, and debit it up to posted+pending, but no
+              ; further
               (ct-step [(t 1N a2 a1 10N)
                         (t 2N a2 a1 5N #{:pending})
                         ; a1 now has 10 posted, 5 pending
                         (t 3N a1 a2 5N)
                         (t 4N a1 a2 5N #{:pending})
                         (t 5N a1 a2 5N)]
-                       [:ok :ok :ok :ok :exceeds-credits]))))))
+                       [:ok :ok :ok :ok :exceeds-credits]))))
+    ; The docs say "debit_account.debits_pending + debit_account.debits_posted
+    ; + transfer.amount would exceed debit_account.credits_posted". This does
+    ; not appear to be what TigerBeetle actually does. Specifically, posting or
+    ; voiding a pending transfer does *not* throw this error, because its
+    ; invariant was checked at the time of the pending transfer.
+    (is (consistent?
+          (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              (ct-step [(t 10N a2 a1 10N)
+                        (t 11N a1 a2 8N #{:pending})
+                        (assoc (t 12N a1 a2 6N #{:post-pending-transfer})
+                               :code 11N
+                               :pending-id 11N)]
+                       [:ok :ok :ok]))))))
 
 (deftest exceeds-debits-test
   (let [a1 (update a1 :flags conj :credits-must-not-exceed-debits)]
     (is (consistent?
           (-> init0
               (ca-step [a1 a2] [:ok :ok])
-              ; We can debit a1, and credit it up to posted+pending, but no further
+              ; We can debit a1, and credit it up to posted+pending, but no
+              ; further
               (ct-step [(t 1N a1 a2 10N)
                         (t 2N a1 a2 5N #{:pending})
                         ; a1 now has 10 posted, 5 pending
                         (t 3N a2 a1 5N)
                         (t 4N a2 a1 5N #{:pending})
                         (t 5N a2 a1 5N)]
-                       [:ok :ok :ok :ok :exceeds-debits]))))))
+                       [:ok :ok :ok :ok :exceeds-debits]))))
+    ; Complementary test to exceeds-credits--this time we void, rather than
+    ; post.
+    (is (consistent?
+          (-> init0
+              (ca-step [a1 a2] [:ok :ok])
+              (ct-step [(t 10N a1 a2 10N)
+                        (t 11N a2 a1 8N #{:pending})
+                        (assoc (t 12N a2 a1 0N #{:void-pending-transfer})
+                               :code 11N
+                               :pending-id 11N)]
+                       [:ok :ok :ok]))))))
 
 (deftest lookup-transfers-test
   (let [t3 (t 3N a1 a2 10N #{:pending})
