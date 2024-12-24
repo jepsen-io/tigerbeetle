@@ -205,6 +205,10 @@
          m
          xs))
 
+(def chain-zipf-skew
+  "The skew factor for choosing chain lengths"
+  4)
+
 (defn chains
   "Takes a vector of events and partitions them into chains with zipfian
   distributed lengths, setting the :linked flag on events as appropriate. Note
@@ -215,7 +219,8 @@
     (if (<= n 1)
       events
       (loop [i            0             ; Index
-             chain-length (zipf 4 n)  ; How many more events in this chain
+             ; How many more events in this chain
+             chain-length (zipf chain-zipf-skew n)
              events       (transient events)]
         (cond (= i n)
               ; Done.
@@ -229,7 +234,7 @@
               ; Chain done; re-roll length
               (= chain-length 0)
               (recur (inc i)
-                     (zipf 2.0 n)
+                     (zipf chain-zipf-skew n)
                      events)
 
               ; Link
@@ -306,6 +311,36 @@
                     (if (bs/contains? ids id)
                       id
                       (recur (dec tries)))))))))))
+
+(defn add-pending-transfer
+  "Adds a pending transfer, with probability p, to the pending transfer ID
+  set. Does not add if present in completed-transfer-ids."
+  [completed-transfer-ids pending-transfer-ids p id]
+  (cond (< p (dg/double))
+       pending-transfer-ids
+
+        (bs/contains? completed-transfer-ids id)
+        pending-transfer-ids
+
+        true
+        (bs/add pending-transfer-ids id)))
+
+(defn remove-pending-transfer
+  "Removes a pending transfer from the pending ID set, with probability p."
+  [pending-transfer-ids p id]
+  (if (< p (dg/double))
+    pending-transfer-ids
+    (bs/remove pending-transfer-ids id)))
+
+(defn complete-pending-transfer
+  "Called when we learn that a transfer has been completed. Takes the set of
+  completed IDs and the set of pending IDs; returns a pair of [completed-ids
+  pending-ids]. With probability p, marks the transfer as completed and removes
+  it from pending."
+  [completed-transfer-ids pending-transfer-ids p id]
+  (if (< p (dg/double))
+    [completed-transfer-ids pending-transfer-ids]
+    [(bs/add completed-transfer-ids id) (bs/remove pending-transfer-ids id)]))
 
 ; The State encapsulates the information we need to know about the current
 ; state of the database in order to generate new invocations. Mutations are
@@ -409,8 +444,10 @@
 	 transfers            ; A LifecycleMap of id->transfer
    ledger->accounts     ; A Bifurcan map of a ledger to a LifeCycleMap of
                         ; accounts
-   pending-transfer-ids ; A Bifurcan set of ids of transfers we intend to
-                        ; complete later.
+   pending-transfer-ids ; A Bifurcan set of IDs of transfers we intend to
+                        ; post or void later.
+   completed-transfer-ids ; A Bifurcan set of IDs of transfers we believe have
+                          ; been posted or voided.
    ; An integer map of processes to the last invocation that process performed.
    ; Used to connect (e.g.) create-transfer requests to their results.
    process->invoke
@@ -639,7 +676,7 @@
 				(assoc :code (rand-code this)))))
 
 	(add-new-accounts [this new-accounts]
-    ; Just created; record possible existence.
+    ; We're invoking create-accounts.
 		(let [ids (mapv :id new-accounts)]
 			(assoc this
 						 :next-id (inc (reduce max next-id ids))
@@ -675,48 +712,63 @@
 	(add-new-transfers [this new-transfers]
 		(let [ids (mapv :id new-transfers)
           ; As soon as we submit a pending transfer, it's something we could
-          ; try to finish
-          ptids (->> new-transfers
-                  (filter (comp :pending :flags))
-                  (map :id)
-                  ;((fn [x] (info "Adding pending transfers" (sort x)) x))
-                  (binto bs/add pending-transfer-ids))]
+          ; try to finish. Not always--this tends to create lots of races with
+          ; a high chance of failure.
+          ptids (reduce (fn [ptids t]
+                          (if (:pending (:flags t))
+                            (add-pending-transfer completed-transfer-ids
+                                                  ptids
+                                                  0.2
+                                                  (:id t))
+                            ptids))
+                        pending-transfer-ids
+                        new-transfers)]
       (assoc this
              :next-id   (inc (reduce max next-id ids))
              :transfers (reduce lm/add-unlikely transfers new-transfers)
              :pending-transfer-ids ptids)))
 
   (add-new-transfers [this new-transfers results p]
-    ; Zip through results and mark failures as unlikely
-    (let [[transfers pending-transfer-ids]
-          (bireduce (fn [[transfers pending-transfer-ids] transfer result]
+    ; We've completed a create-transfers request.
+    (let [[transfers
+           completed-transfer-ids
+           pending-transfer-ids]
+          (bireduce (fn [[transfers ctids ptids] transfer result]
                       (let [id (:id transfer)]
                         (case result
-                          ; When we get an OK result, we know this transfer is
-                          ; likely
                           (:ok :exists)
-                          [(lm/is-likely transfers id)
-                           ; If this transfer completed something, we should
-                           ; (mostly) remove it from the pending set.
-                           (let [pid (:pending-id transfer)]
-                             (if (or (nil? pid) (< p (dg/double)))
-                               pending-transfer-ids
-                               (do (info id "completed transfer" pid
-                                         "; removing from pending-transfer-ids")
-                                   (bs/remove pending-transfer-ids pid))))]
+                          (let [; When we get an OK result, we know this
+                                ; transfer is likely
+                                transfers (lm/is-likely transfers id)
+                                ; If this transfer posted or voided something,
+                                ; we should remove *that* from the pending set.
+                                pid (:pending-id transfer)
+                                [ctids ptids] (if (nil? pid)
+                                                [ctids ptids]
+                                                (complete-pending-transfer
+                                                  ctids ptids p pid))
+                                ; If this transfer was itself pending, we have
+                                ; a second chance to record it--it definitely
+                                ; exists now.
+                                ptids (if (:pending (:flags transfer))
+                                        (add-pending-transfer ctids ptids 1 id)
+                                        ptids)]
+                            [transfers ctids ptids])
 
-                          ; When we get a failure, we say it's unseen
+                          ; When we get nil or an error code, we treat that as
+                          ; an unseen read of this specific transfer--it may
+                          ; fall out of the likely set.
                           [(lm/is-unseen transfers p id)
+                           ctids
                            ; And (mostly) remove it from the pending txn set.
-                           (if (< p (dg/double))
-                             pending-transfer-ids
-                             (bs/remove pending-transfer-ids id))])))
-                    [transfers pending-transfer-ids]
+                           (remove-pending-transfer ptids p id)])))
+                    [transfers completed-transfer-ids pending-transfer-ids]
                     new-transfers
                     results)]
     (assoc this
-           :transfers            transfers
-           :pending-transfer-ids pending-transfer-ids)))
+           :transfers              transfers
+           :completed-transfer-ids completed-transfer-ids
+           :pending-transfer-ids   pending-transfer-ids)))
 
 	(read-accounts [this results]
 		(let [timestamps (keep :timestamp results)]
@@ -760,13 +812,21 @@
 						 :timestamp-max (reduce max timestamp-max timestamps)
              :transfers
 						 (reduce lm/is-seen transfers (keep :id results))
-             ; TODO: If we see something pending, and we haven't definitively
-             ; closed it, push it back into the pending set?
-             ;:pending-transfer-ids
-             ;(->> results
-             ;     (filter (comp :pending :flags))
-             ;     (map :id)
-             ;     (binto bs/add pending-transfer-ids))
+             ; If we read a pending txn, we have a chance to record it as
+             ; pending (unless it's already completed). This helps us complete
+             ; transfers that fall through the cracks.
+             :pending-transfer-ids
+             (reduce (fn [ptids transfer]
+                       (if (:pending (:flags transfer))
+                         (add-pending-transfer completed-transfer-ids
+                                               ptids
+                                               0.1
+                                               (:id transfer))
+                         ptids))
+                     pending-transfer-ids
+                     results)
+             ; TODO: when we read a transfer that posts/voids another, we could
+             ; record that too.
              )))
 
   (read-transfers [this ids results]
@@ -782,9 +842,8 @@
                           [(lm/is-unseen transfers 0.5 id)
                            ; And likewise, if we fail to read something, make
                            ; it less likely we'll try to complete it
-                           (if (< (dg/double) 0.5)
-                             pending-transfer-ids
-                             (bs/remove pending-transfer-ids id))]))
+                           (remove-pending-transfer pending-transfer-ids
+                                                    0.5 id)]))
                       [(:transfers this')
                        (:pending-transfer-ids this')]
                       ids
@@ -800,13 +859,14 @@
 	"A fresh state."
 	[]
 	(map->State
-		{:next-id              1N
-		 :timestamp-min        Long/MAX_VALUE
-		 :timestamp-max        Long/MIN_VALUE
-		 :transfers            (lm/lifecycle-map)
-		 :pending-transfer-ids bs/empty
-		 :ledger->accounts     bm/empty
-     :process->invoke      (bim/int-map)}))
+		{:next-id                1N
+		 :timestamp-min          Long/MAX_VALUE
+		 :timestamp-max          Long/MIN_VALUE
+		 :transfers              (lm/lifecycle-map)
+		 :pending-transfer-ids   bs/empty
+     :completed-transfer-ids bs/empty
+		 :ledger->accounts       bm/empty
+     :process->invoke        (bim/int-map)}))
 
 ; A generator which maintains the state and ensures its wrapped generator has
 ; access to it via the context map.
