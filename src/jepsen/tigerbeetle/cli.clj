@@ -36,6 +36,14 @@
     :partition
     :clock})
 
+(def db-node-targets
+  "Different ways we can target single nodes for database faults."
+  #{:one
+    :minority
+    :majority
+    :primaries
+    :all})
+
 (def all-nemeses
   "Combinations of nemeses we run by default."
   [; Nothing
@@ -99,8 +107,8 @@
                          :nodes         (:nodes opts)
                          :faults        (:nemesis opts)
                          ;:partition     {:targets [:one ::majority]}
-                         ;:pause         {:targets [:one :primaries :majority :all]}
-                         ;:kill          {:targets [:one :primaries :majority :all]}
+                         :pause         {:targets (:db-node-targets opts)}
+                         :kill          {:targets (:db-node-targets opts)}
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload
@@ -155,6 +163,11 @@
     :default :one
     :parse-fn keyword
     :validate [#{:one :all} "Must be one or all"]]
+
+   [nil "--db-node-targets TARGETS" "A comma-separated list of ways to target DB nodes for faults, like 'one,majority'"
+    :default [:one :primaries :majority :all]
+    :parse-fn parse-comma-kws
+    :validate [(partial every? db-node-targets) (cli/one-of db-node-targets)]]
 
    [nil "--download-data" "Whether to download data files from nodes."]
 
