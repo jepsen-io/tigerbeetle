@@ -215,7 +215,7 @@
    [nil "--zip PATH" "Installs a local zip file, rather than downloading an official release."]
 
    ["-v" "--version VERSION" "The TigerBeetle version to install."
-    :default "0.16.17"]
+    :default "0.16.20"]
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword
