@@ -80,7 +80,11 @@
              (o 1 0 :ok     :create-accounts [:ok :ok] 101)
              (o 2 1 :invoke :lookup-accounts [1N 2N])
              ; An improper read!
-             (o 3 1 :ok     :lookup-accounts [a1' (assoc a2' :ledger 5)] 200)])
+             (o 3 1 :ok     :lookup-accounts [a1' (assoc a2' :ledger 5)] 200)
+
+             ; Dummy write to finish main phase
+             (o 100 100 :invoke :create-accounts [])
+             (o 101 100 :ok     :create-accounts [] 1000)])
         r (check h)]
     (is (= {:valid? false
             :error-types #{:model}
@@ -193,7 +197,10 @@
              (o 13 4 :ok     :lookup-accounts [(assoc a1' :debits-posted 17N)] 502)
              ; A read of A2, just so we know it exists
              (o 14 5 :invoke :lookup-accounts [2N])
-             (o 15 5 :ok     :lookup-accounts [(assoc a2' :credits-posted 17N)] 503)])
+             (o 15 5 :ok     :lookup-accounts [(assoc a2' :credits-posted 17N)] 503)
+             ; Dummy write to finish main phase
+             (o 100 100 :invoke :create-accounts [])
+             (o 101 100 :ok     :create-accounts [] 1000)])
         r (check h)]
     (is (not (:valid? r)))
     ; We have a model error
@@ -236,7 +243,11 @@
                                               (assoc a2' :credits-posted 7N)] 213)
              ; We need a transfer read to get the timestamp for t10
              (o 10 5 :invoke :lookup-transfers [10N])
-             (o 11 5 :ok     :lookup-transfers [(tts (t 10N a1 a2 5N))] 500)])
+             (o 11 5 :ok     :lookup-transfers [(tts (t 10N a1 a2 5N))] 500)
+
+             ; Dummy write to finish main phase
+             (o 100 100 :invoke :create-accounts [])
+             (o 101 100 :ok     :create-accounts [] 1000)])
         r (check h)]
     (is (not (:valid? r)))
     ; We have a model error
@@ -261,3 +272,25 @@
              ; We start from the last valid read
              :solution     [{:id 11N, :op-index 6, :amount 2N, :type :fail, :result nil, :applied? true, :timestamp nil}]}}
            (:model r)))))
+
+(deftest trailing-indefinite-write-test
+  ; If there are pending unapplied writes at the end of the main phase, the
+  ; final read phase might observe only some of their effects. We need to make
+  ; sure we always infer a contiguous order by clipping off any ops that
+  ; execute at timestamps after the first final read.
+  (let [h (h/history
+            [; Two crashed writes, one of which depends on the other
+             (o 0 0 :invoke :create-accounts [a1 a2])
+             (o 1 0 :info   :create-accounts nil)
+             (o 2 1 :invoke :create-transfers [(t 10N a1 a2 5N)])
+             (o 3 1 :info   :create-transfers nil)
+             ; Now we start final reads. We read create-accounts and miss it;
+             ; it's still pending
+             (o 4 2 :invoke :lookup-accounts [1N 2N])
+             (o 5 2 :ok     :lookup-accounts [nil nil] 100)
+             ; Create-accounts applies, as does create-transfers, at timestamp
+             ; 101, 102, and 110. Now we read the transfer
+             (o 6 2 :invoke :lookup-transfers [10N])
+             (o 7 2 :ok     :lookup-transfers
+                [(assoc (tts (t 10N a1 a2 5N)) :timestamp 110)] 120)])]
+    (is (:valid? (check h)))))

@@ -141,6 +141,15 @@
      :combiner          bm/merge
      :post-combiner     b/forked}))
 
+(defn main-phase-max-timestamp
+  "The timestamp of the last write we perform."
+  [history]
+  (or (->> (t/filter (h/has-f? write-fs))
+           (t/keep :timestamp)
+           (t/max)
+           (h/tesser history))
+      Long/MIN_VALUE))
+
 (defn op->id->timestamp-map
   "Takes a single Operation whose :value is a collection of things (e.g.
   accounts) with :id and :timestamp fields. Returns a map of id->timestamp."
@@ -260,25 +269,41 @@
     :history                  The history
     :account-id->timestamp    A map of observed account IDs to timestamps
     :transfer-id->timestamp   A map of observed transfer IDs to timestamps
+    :main-phase-max-timestamp The highest observed timestamp of a write in
+                              the main phase
 
   Returns a new history, like the given history, but where any info operations
   are resolved to either :ok or :fail based on their events being present in
   the id->timestamp maps. Associates actually-ok ops with a :timestamp and
-  :value :unknown."
-  [{:keys [history account-id->timestamp transfer-id->timestamp]}]
+  :value :unknown.
+
+  All operations with a timestamp higher than max-phase-main-timestamp fail:
+  this prevents info writes from executing during the middle of the final read
+  phase and corrupting state."
+  [{:keys [history account-id->timestamp transfer-id->timestamp
+           main-phase-max-timestamp]}]
   (h/map (fn resolve [op]
-           (if (and (h/client-op? op)
-                    (h/info? op))
-             (if-let [ts (resolve-ops-infer-timestamp
-                           history
-                           account-id->timestamp
-                           transfer-id->timestamp
-                           op)]
-               (assoc op :type :ok, :value :unknown, :timestamp ts)
-               ; No observed timestamp; must have failed
-               (assoc op :type :fail))
-             ; :ok or :info op
-             op))
+           (let [op (if (and (h/client-op? op)
+                             (h/info? op))
+                      (if-let [ts (resolve-ops-infer-timestamp
+                                    history
+                                    account-id->timestamp
+                                    transfer-id->timestamp
+                                    op)]
+                        (assoc op
+                               :type      :ok
+                               :value     :unknown
+                               :timestamp ts)
+                        ; No observed timestamp; must have failed
+                        (assoc op :type :fail))
+                      ; :ok or :info op
+                      op)]
+             ; Fail everything after the main phase
+             (if-let [t (:timestamp op)]
+               (if (< main-phase-max-timestamp t)
+                 (assoc op :type :fail)
+                 op)
+               op)))
          history))
 
 (defn timestamp-sorted
@@ -665,12 +690,16 @@
                                       (account-id->timestamp history))
         transfer-id->timestamp (h/task history transfer-id->timestamp []
                                       (transfer-id->timestamp history))
+        main-phase-max-timestamp (h/task history main-phase-max-timestamp []
+                                         (main-phase-max-timestamp history))
         resolved-history (h/task history resolve-ops
                                  [ait account-id->timestamp
-                                  tit transfer-id->timestamp]
+                                  tit transfer-id->timestamp
+                                  mpmt main-phase-max-timestamp]
                                  (resolve-ops {:history history
                                                :account-id->timestamp ait
-                                               :transfer-id->timestamp tit}))
+                                               :transfer-id->timestamp tit
+                                               :main-phase-max-timestamp mpmt}))
         model-check (h/task history model-check [rh  resolved-history
                                                  ait account-id->timestamp
                                                  tit transfer-id->timestamp]
