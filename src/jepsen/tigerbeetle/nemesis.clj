@@ -55,15 +55,36 @@
          (gen/time-limit period gen)
          final-gen]))))
 
+(defn large-clock-skew-package
+  "A custom scenario which introduces a large clock error across all nodes and
+  sits back to wait."
+  [opts]
+  (when (:large-clock (:faults opts))
+    {:generator (gen/delay 5
+                           [{:type :info, :f :check-clock-offsets}
+                            (gen/once
+                              (fn [test ctx]
+                                {:type :info
+                                 :f    :bump-clock
+                                 :value
+                                 (zipmap (:nodes test)
+                                         ; Default tolerance is 10s
+                                         (iterate (partial + (* 1000 3600))
+                                                  0))}))
+                            (gen/repeat
+                              {:type :info, :f :check-clock-offsets})])
+     :nemesis n/noop
+     :final-generator {:type :info, :f :reset-clock}}))
+
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."
   [opts]
   (let [opts (update opts :faults set)
         packages
         (->> (concat
-               ; Custom packages
-               (nc/nemesis-packages opts))
-             (filter :generator))
+               ; Standard packages
+               (nc/nemesis-packages opts)
+               [(large-clock-skew-package opts)]))
 
         nsp (:stable-period opts)]
     (info :packages (map (comp n/fs :nemesis) packages))

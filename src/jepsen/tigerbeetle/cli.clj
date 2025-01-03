@@ -34,7 +34,8 @@
   #{:kill
     :pause
     :partition
-    :clock})
+    :clock
+    :large-clock})
 
 (def db-node-targets
   "Different ways we can target single nodes for database faults."
