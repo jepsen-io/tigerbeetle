@@ -585,6 +585,53 @@
     (= credit-account-id debit-account-id)
     :accounts-must-be-different))
 
+(defn create-transfer-basic-error
+  "A few basic errors that can occur when creating a transfer"
+  [errors import? id flags]
+  (cond ; Already failed
+        (bm/contains? errors id)
+        :id-already-failed
+
+        ; ID range
+        (= 0N id)
+        :id-must-not-be-zero
+
+        (= uint128-max id)
+        :id-must-not-be-int-max
+
+        ; Import mismatch
+        (and import? (not (:imported flags)))
+        :imported-event-expected
+
+        (and (not import?) (:imported flags))
+        :imported-event-not-expected))
+
+(defn create-transfer-timestamp-error
+  "Errors related to timestamps during transfer creation"
+  [timestamp transfer-timestamp import? credit-acct debit-acct transfer]
+  (let [ts (:timestamp transfer 0)]
+    (if import?
+      (cond (not (< 0 ts timestamp-upper-bound))
+            :imported-event-timestamp-out-of-range
+
+            (< timestamp ts)
+            :imported-event-timestamp-must-not-advance
+
+            (<= ts transfer-timestamp)
+            :imported-event-timestamp-must-not-regress
+
+            (<= ts (:timestamp credit-acct -1))
+            :imported-event-timestamp-must-postdate-credit-account
+
+            (<= ts (:timestamp debit-acct -1))
+            :imported-event-timestamp-must-postdate-debit-account
+
+            (< 0 (:timeout transfer 0))
+            :imported-event-timeout-must-be-zero)
+      ; Not importing
+      (when (not (= 0 ts))
+        :timestamp-must-be-zero))))
+
 (defn transfer-update-account
   "Called to update a single account for a transfer. Take an account, a mode
   (:debit or :credit), an amount, and the transfer flags."
@@ -894,64 +941,22 @@
                    amount
                    ledger
                    code]} transfer
-           extant (bm/get transfers id)
-           user-data  (:user-data transfer 0)
-           pending-id (:pending-id transfer 0N)
+           extant      (bm/get transfers id)
+           user-data   (:user-data transfer 0)
+           pending-id  (:pending-id transfer 0N)
+           imported?   (:imported flags)
+           credit-acct (bm/get accounts credit-account-id nil)
+           debit-acct  (bm/get accounts debit-account-id nil)
+           ts          (:timestamp transfer 0)
 
-           ; Did this already fail?
-           _ (when-let [error (bm/get errors id)]
-               (return :id-already-failed))
-
-           ; Basic checks
-           _ (when (= 0N id)
-               (return :id-must-not-be-zero))
-           _ (when (= uint128-max id)
-               (return :id-must-not-be-int-max))
-
-           ; Pre-existing error
-           _ (when-let [err (create-transfer-flags-error flags)]
+           _ (when-let [err (or (create-transfer-basic-error
+                                  errors import? id flags)
+                                (create-transfer-flags-error flags)
+                                (create-transfer-extant-error transfer extant)
+                                (create-transfer-timestamp-error
+                                  timestamp transfer-timestamp import?
+                                  credit-acct debit-acct transfer))]
                (return err))
-
-           ; Extant checks
-           _ (when-let [err (create-transfer-extant-error transfer extant)]
-               (return err))
-
-           ; Import checks
-           imported? (:imported flags)
-           _ (if import?
-               (when (not imported?)
-                 (return :imported-event-expected))
-               (when imported?
-                 (return :imported-event-not-expected)))
-
-           ; Timestamp checks
-           ts (:timestamp transfer 0)
-           _ (if import?
-               (let [credit-acct (bm/get accounts credit-account-id
-                                         {:timestamp -1})
-                     debit-acct  (bm/get accounts debit-account-id
-                                         {:timestamp -1})]
-                 (cond (not (< 0 ts timestamp-upper-bound))
-                       (return :imported-event-timestamp-out-of-range)
-
-                       (< timestamp ts)
-                       (return :imported-event-timestamp-must-not-advance)
-
-                       (<= ts transfer-timestamp)
-                       (return :imported-event-timestamp-must-not-regress)
-
-                       (<= ts (:timestamp credit-acct))
-                       (return :imported-event-timestamp-must-postdate-credit-account)
-
-                       (<= ts (:timestamp debit-acct))
-                       (return :imported-event-timestamp-must-postdate-debit-account)
-
-                       (< 0 (:timeout transfer 0))
-                       (return :imported-event-timeout-must-be-zero)))
-
-               ; Not importing
-               (when (not (zero? ts))
-                 (return :timestamp-must-be-zero)))
 
            ; The whole post/void dance
            post?      (:post-pending-transfer flags)
