@@ -59,22 +59,30 @@
   "A custom scenario which introduces a large clock error across all nodes and
   sits back to wait."
   [opts]
-  (when (:large-clock (:faults opts))
-    {:generator (gen/delay 5
-                           [{:type :info, :f :check-clock-offsets}
-                            (gen/once
-                              (fn [test ctx]
-                                {:type :info
-                                 :f    :bump-clock
-                                 :value
-                                 (zipmap (:nodes test)
-                                         ; Default tolerance is 10s
-                                         (iterate (partial + (* 1000 3600))
-                                                  0))}))
-                            (gen/repeat
-                              {:type :info, :f :check-clock-offsets})])
-     :nemesis n/noop
-     :final-generator {:type :info, :f :reset-clock}}))
+  ; dt here is seconds between nodes. 21 is the minimum sufficient to break
+  ; liveness with TB's defaults.
+  (let [dt 3600]
+    (when (:large-clock (:faults opts))
+      {:generator (gen/delay 5
+                             [{:type :info, :f :check-clock-offsets}
+                              (gen/once
+                                (fn [test ctx]
+                                  {:type :info
+                                   :f    :bump-clock
+                                   :value
+                                   (zipmap (:nodes test)
+                                           ; Default tolerance is 10s
+                                           (iterate (partial + (* 1000 dt))
+                                                    0))}))
+                              (gen/repeat
+                                {:type :info, :f :check-clock-offsets})])
+       :nemesis n/noop
+       :final-generator
+       (gen/once
+         (fn [test ctx]
+           {:type :info
+            :f :reset-clock
+            :value (:nodes test)}))})))
 
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."
