@@ -61,9 +61,10 @@
   [opts]
   ; dt here is seconds between nodes. 21 is the minimum sufficient to break
   ; liveness with TB's defaults.
-  (let [dt 3600]
-    (when (:large-clock (:faults opts))
-      {:generator (gen/delay 5
+  (let [dt 3600
+        needed? (:large-clock (:faults opts))]
+    {:generator (when needed?
+                  (gen/delay 5
                              [{:type :info, :f :check-clock-offsets}
                               (gen/once
                                 (fn [test ctx]
@@ -75,14 +76,15 @@
                                            (iterate (partial + (* 1000 dt))
                                                     0))}))
                               (gen/repeat
-                                {:type :info, :f :check-clock-offsets})])
-       :nemesis n/noop
-       :final-generator
+                                {:type :info, :f :check-clock-offsets})]))
+     :nemesis n/noop
+     :final-generator
+     (when needed?
        (gen/once
          (fn [test ctx]
            {:type :info
             :f :reset-clock
-            :value (:nodes test)}))})))
+            :value (:nodes test)})))}))
 
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."
