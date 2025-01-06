@@ -587,7 +587,7 @@
 
 (defn create-transfer-basic-error
   "A few basic errors that can occur when creating a transfer"
-  [errors import? id flags]
+  [errors import? id code flags]
   (cond ; Already failed
         (bm/contains? errors id)
         :id-already-failed
@@ -599,12 +599,20 @@
         (= uint128-max id)
         :id-must-not-be-int-max
 
+        (= 0 code)
+        :code-must-not-be-zero
+
         ; Import mismatch
         (and import? (not (:imported flags)))
         :imported-event-expected
 
         (and (not import?) (:imported flags))
-        :imported-event-not-expected))
+        :imported-event-not-expected
+
+        (and (not (:pending flags))
+             (or (:closing-credit flags)
+                 (:closing-debit flags)))
+        :closing-transfer-must-be-pending))
 
 (defn create-transfer-timestamp-error
   "Errors related to timestamps during transfer creation"
@@ -632,43 +640,132 @@
       (when (not (= 0 ts))
         :timestamp-must-be-zero))))
 
+(defn create-transfer-closed-error
+  "Errors involving a closed account, or closing/reopening an account."
+  [flags debit-account credit-account]
+  (cond ; You can't do anything except void a closed account.
+        (and (not (:void-pending-transfer flags))
+             (:closed (:flags debit-account)))
+        :debit-account-already-closed
+
+        (and (not (:void-pending-transfer flags))
+             (:closed (:flags credit-account)))
+        :credit-account-already-closed))
+
+(defn create-transfer-pending-error
+  "Errors involving pending transfers"
+  [{:keys [id code ledger amount debit-account-id credit-account-id flags]
+    :as transfer}
+   pending-id
+   pending]
+  (let [post? (:post-pending-transfer flags)
+        void? (:void-pending-transfer flags)]
+    ; Constraints on the pending ID
+    (or (if (or post? void?)
+          (condp = pending-id
+            0N          :pending-id-must-not-be-zero
+            uint128-max :pending-id-must-not-be-int-max
+            id          :pending-id-must-be-different
+            nil)
+          (when (not= 0N pending-id)
+            :pending-id-must-be-zero))
+        ; Constraints on the transfer
+        (if (nil? pending)
+          ; No pending transfer known
+          (cond
+            (not= 0N pending-id)
+            :pending-transfer-not-found)
+
+          ; OK, we're doing a pending transfer and we found it.
+          (cond (not (:pending (:flags pending)))
+                :pending-transfer-not-pending
+
+                (and (not= debit-account-id 0)
+                     (not= debit-account-id (:debit-account-id pending)))
+                :pending-transfer-has-different-debit-account-id
+
+                (and (not= credit-account-id 0)
+                     (not= credit-account-id (:credit-account-id pending)))
+                :pending-transfer-has-different-credit-account-id
+
+                (and (not= ledger 0) (not= ledger (:ledger pending)))
+                :pending-transfer-has-different-ledger
+
+                (and (not= code 0) (not= code (:code pending)))
+                :pending-transfer-has-different-code
+
+                (< (:amount pending) amount)
+                :exceeds-pending-transfer-amount
+
+                (and void? (not= amount 0N) (not= amount (:amount pending)))
+                :pending-transfer-has-different-amount
+
+                (= :posted (:state pending))
+                :pending-transfer-already-posted
+
+                (= :voided (:state pending))
+                :pending-transfer-already-voided)))))
+
+
 (defn transfer-update-account
   "Called to update a single account for a transfer. Take an account, a mode
-  (:debit or :credit), an amount, and the transfer flags."
-  [account mode pending-amount amount flags]
+  (:debit or :credit), the pending transfer (if any), an amount, and the
+  transfer flags."
+  [account mode pending amount flags]
   (assert account)
   (case mode
     :debit
-    (cond
-      (:pending flags)
-      (update account :debits-pending + amount)
+    (let [; First, close/reopen account
+          account (cond (:closing-debit flags)
+                        (update account :flags conj :closed)
 
-      (:post-pending-transfer flags)
-      (-> account
-          (update :debits-pending - pending-amount)
-          (update :debits-posted + amount))
+                        (and (:void-pending-transfer flags)
+                             (:closing-debit (:flags pending)))
+                        (update account :flags disj :closed)
 
-      (:void-pending-transfer flags)
-      (update account :debits-pending - pending-amount)
+                        true
+                        account)]
+      ; Balance changes
+      (cond
+        (:pending flags)
+        (update account :debits-pending + amount)
 
-      true
-      (update account :debits-posted + amount))
+        (:post-pending-transfer flags)
+        (-> account
+            (update :debits-pending - (:amount pending))
+            (update :debits-posted + amount))
+
+        (:void-pending-transfer flags)
+        (update account :debits-pending - (:amount pending))
+
+        true
+        (update account :debits-posted + amount)))
 
     :credit
-    (cond
-      (:pending flags)
-      (update account :credits-pending + amount)
+    (let [; First, close/reopen account
+          account (cond (:closing-credit flags)
+                        (update account :flags conj :closed)
 
-      (:post-pending-transfer flags)
-      (-> account
-          (update :credits-pending - pending-amount)
-          (update :credits-posted + amount))
+                        (and (:void-pending-transfer flags)
+                             (:closing-credit (:flags pending)))
+                        (update account :flags disj :closed)
 
-      (:void-pending-transfer flags)
-      (update account :credits-pending - pending-amount)
+                        true
+                        account)]
+      (cond
+        (:pending flags)
+        (update account :credits-pending + amount)
 
-      true
-      (update account :credits-posted + amount))))
+        (:post-pending-transfer flags)
+        (-> account
+            (update :credits-pending - (:amount pending))
+            (update :credits-posted + amount))
+
+        (:void-pending-transfer flags)
+        (update account :credits-pending - (:amount pending))
+
+        true
+        (update account :credits-posted + amount)))))
 
 (defn update-secondary-index
   "Updates a secondary index to fold in a new account or transfer. Takes the
@@ -941,108 +1038,45 @@
                    amount
                    ledger
                    code]} transfer
-           extant      (bm/get transfers id)
-           user-data   (:user-data transfer 0)
-           pending-id  (:pending-id transfer 0N)
-           imported?   (:imported flags)
-           credit-acct (bm/get accounts credit-account-id nil)
-           debit-acct  (bm/get accounts debit-account-id nil)
-           ts          (:timestamp transfer 0)
-
-           _ (when-let [err (or (create-transfer-basic-error
-                                  errors import? id flags)
-                                (create-transfer-flags-error flags)
-                                (create-transfer-extant-error transfer extant)
-                                (create-transfer-timestamp-error
-                                  timestamp transfer-timestamp import?
-                                  credit-acct debit-acct transfer))]
-               (return err))
-
-           ; The whole post/void dance
-           post?      (:post-pending-transfer flags)
-           void?      (:void-pending-transfer flags)
-           _          (if (or post? void?)
-                        (condp = pending-id
-                          0N          (return :pending-id-must-not-be-zero)
-                          uint128-max (return :pending-id-must-not-be-int-max)
-                          id          (return :pending-id-must-be-different)
-                          nil)
-                        (when (not= 0N pending-id)
-                          (return :pending-id-must-be-zero)))
+           extant         (bm/get transfers id)
+           user-data      (:user-data transfer 0)
+           pending-id     (:pending-id transfer 0N)
+           imported?      (:imported flags)
+           post?          (:post-pending-transfer flags)
+           void?          (:void-pending-transfer flags)
+           credit-account (bm/get accounts credit-account-id nil)
+           debit-account  (bm/get accounts debit-account-id nil)
+           ts             (:timestamp transfer 0)
            pending    (when (not= 0N pending-id)
-                        (or (bm/get transfers pending-id)
-                            (return :pending-transfer-not-found)))
-           _ (when pending
-               (cond
-                 (not (:pending (:flags pending)))
-                 (return :pending-transfer-not-pending)
-
-                 (and (not= debit-account-id 0)
-                      (not= debit-account-id
-                            (:debit-account-id pending)))
-                 (return :pending-transfer-has-different-debit-account-id)
-
-                 (and (not= credit-account-id 0)
-                      (not= credit-account-id
-                            (:credit-account-id pending)))
-                 (return :pending-transfer-has-different-credit-account-id)
-
-                 (and (not= ledger 0)
-                      (not= ledger (:ledger pending)))
-                 (return :pending-transfer-has-different-ledger)
-
-                 (and (not= code 0)
-                      (not= code (:code pending)))
-                 (return :pending-transfer-has-different-code)
-
-                 (< (:amount pending) amount)
-                 (return :exceeds-pending-transfer-amount)
-
-                 (and void?
-                      (not= amount 0N)
-                      (not= amount (:amount pending)))
-                 (return :pending-transfer-has-different-amount)
-
-                 (= :posted (:state pending))
-                 (return :pending-transfer-already-posted)
-
-                 (= :voided (:state pending))
-                 (return :pending-transfer-already-voided)
-                 ))
-           ; When voiding a transfer, we always use the original transfer
-           ; amount.
+                        (bm/get transfers pending-id))
+           ; Some values come from the pending transfer
            amount (if void?
                     (:amount pending)
                     amount)
-
-           _ (when (not pending)
-               (cond
-                 (= 0 code)
-                 (return :code-must-not-be-zero)
-
-                 (or (:closing-credit flags)
-                     (:closing-debit flags))
-                 (return :closing-transfer-must-be-pending)))
-
-           _ (if (:pending flags)
-               ; This is a pending transfer
-               nil
-               ; This is not a pending transfer
-               (cond
-                 (< 0 (:timeout transfer 0))
-                 (return :timeout-reserved-for-pending-transfer)))
-
-           code              (or (:code pending)
-                                 code)
-           ; Check credit/debit IDs
+           code (or (:code pending) code)
            credit-account-id (or (:credit-account-id pending)
                                  credit-account-id)
            debit-account-id (or (:debit-account-id pending)
                                 debit-account-id)
-           _ (when-let [err (create-transfer-*-account-id-error
-                              credit-account-id
-                              debit-account-id)]
+
+           _ (when-let [err (or (create-transfer-basic-error
+                                  errors import? id code flags)
+                                (create-transfer-flags-error flags)
+                                (create-transfer-extant-error transfer extant)
+                                (create-transfer-timestamp-error
+                                  timestamp transfer-timestamp import?
+                                  credit-account debit-account transfer)
+                                (create-transfer-closed-error
+                                  flags debit-account credit-account)
+                                (create-transfer-pending-error
+                                  transfer pending-id pending)
+                                (create-transfer-*-account-id-error
+                                  credit-account-id debit-account-id))]
                (return err))
+
+           _ (when (and (not (:pending flags))
+                        (< 0 (:timeout transfer 0)))
+                 (return :timeout-reserved-for-pending-transfer))
 
            ; Fetch accounts
            debit-account (or (bm/get accounts debit-account-id)
@@ -1198,13 +1232,13 @@
                (bm/update debit-account-id
                           transfer-update-account
                           :debit
-                          (:amount pending)
+                          pending
                           amount'
                           flags)
                (bm/update credit-account-id
                           transfer-update-account
                           :credit
-                          (:amount pending)
+                          pending
                           amount'
                           flags))]
       (assoc this'

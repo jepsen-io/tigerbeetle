@@ -1235,6 +1235,59 @@
                                :pending-id 11N)]
                        [:ok :ok :ok]))))))
 
+(deftest closing-debit-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            ; Close
+            (ct-step [(t 10N a1 a2 0N #{:pending :closing-debit})
+                      (t 11N a1 a2 1N)
+                      (t 12N a2 a1 1N)]
+                     [:ok
+                      :debit-account-already-closed
+                      :credit-account-already-closed])
+            ; Reads should see the account closed
+            (la-step [1N] [(assoc a1' :flags #{:closed})])
+            ; Reopen
+            (ct-step [(assoc (t 13N a1 a2 0N #{:void-pending-transfer})
+                             :code 10N
+                             :pending-id 10N)
+                      (t 14N a1 a2 1N)
+                      (t 15N a2 a1 1N)]
+                     [:ok :ok :ok])
+            (la-step [1N]
+                     [(assoc a1'
+                             :debits-posted 1N
+                             :credits-posted 1N)])))))
+
+(deftest double-close-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            ; Close 2 twice
+            (ct-step [(t 10N a1 a2 0N #{:pending :closing-credit})
+                      (t 11N a2 a1 0N #{:pending :closing-debit})]
+                     [:ok
+                      :debit-account-already-closed])))))
+
+(deftest post-transfer-to-closed-account-test
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            (ct-step [; Two pending transfers
+                      (t 10N a1 a2 5N #{:pending})
+                      (t 11N a1 a2 6N #{:pending})
+                      ; Close
+                      (t 12N a1 a2 0N #{:pending :closing-credit})
+                      ; Try to post and void respectively
+                      (assoc (t 13N a1 a2 0N #{:post-pending-transfer})
+                             :code 10N, :pending-id 10N)
+                      (assoc (t 14N a1 a2 0N #{:void-pending-transfer})
+                             :code 11N, :pending-id 11N)]
+                     [:ok :ok :ok
+                      :credit-account-already-closed ; can't post
+                      :ok]))))) ; can void
+
 (deftest lookup-transfers-test
   (let [t3 (t 3N a1 a2 10N #{:pending})
         t4 (t 4N a2 a1 5N)]
