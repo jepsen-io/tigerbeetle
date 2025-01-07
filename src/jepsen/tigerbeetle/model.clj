@@ -1559,10 +1559,6 @@
           start (if reversed (dec n) 0)
           ; We're only interested in balances for this single account
           balances (bm/get historical-balances account-id (bim/int-map))]
-      (info :account-id account-id)
-      (info :code code)
-      (info :pool pool)
-      (info :balances (datafy balances))
       (loop [i       start
              results (transient [])]
         (cond ; Full
@@ -1579,7 +1575,6 @@
                     ts    (bm/key (b/nth pool i))
                     ; Find the corresponding balance
                     balance (bim/get balances ts)]
-                (info :ts ts :balance balance)
                 (if balance
                   (recur i' (conj! results balance))
                   (recur i' results)))))))

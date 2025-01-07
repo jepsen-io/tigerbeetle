@@ -492,6 +492,10 @@
                                     query-accounts results.
      :query-transfers-lengths       A quantile distribution of the lengths of
                                     query-transfers results.
+     :get-account-balances-lengths  A quantile distribution of the lengths of
+                                    get-account-balance batches. Helpful for
+                                    tuning generators so we actually do
+                                    queries that return something.
      :get-account-transfers-lengths A quantile distribution of the lengths of
                                     get-account-transfers. Helpful for tuning
                                     generators so we actually do queries that
@@ -562,6 +566,12 @@
              (tm/digest tq/hdr-histogram)
              (t/post-combine quantiles))
 
+        get-account-balances-lengths
+        (->> (t/filter (h/has-f? :get-account-balances))
+             (t/map (comp count :value))
+             (tm/digest tq/hdr-histogram)
+             (t/post-combine quantiles))
+
         ok-fold
         (->> (t/filter h/ok?)
              (t/fuse
@@ -572,6 +582,7 @@
                 :void-transfers-results        void-transfers-results
                 :query-accounts-lengths        query-accounts-lengths
                 :query-transfers-lengths       query-transfers-lengths
+                :get-account-balances-lengths  get-account-balances-lengths
                 :get-account-transfers-lengths get-account-transfers-lengths}))
 
         chain-lengths

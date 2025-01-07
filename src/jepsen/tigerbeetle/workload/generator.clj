@@ -434,7 +434,8 @@
 
   (gen-account-filter [state]
                       "Generates an account filter map for a
-                      get-account-transfers operation."))
+                      get-account-transfers or get-account-balances
+                      operation."))
 
 (defrecord State
 	[
@@ -520,7 +521,8 @@
                                     #{:debits-must-not-exceed-credits
                                       :credits-must-not-exceed-debits} 1})
                          flags (cond-> exceeds
-                                 )]
+                                 ; Half of accounts track balance histories
+                                 (< (dg/double) 1/2) (conj :history))]
 									 {:id        id
 										:ledger    (account-id->ledger id)
 										:code      (rand-code this)
@@ -1034,6 +1036,12 @@
 	{:f       :get-account-transfers
 	 :value   (gen-account-filter (:state ctx))})
 
+(defn get-account-balances-gen
+  "A generator for get-account-balances operations."
+  [test ctx]
+  {:f     :get-account-balances
+   :value (gen-account-filter (:state ctx))})
+
 (defn debug-gen-gen
   "A generator which emits :debug-gen operations whose invoke value tells us
   about the current state of the generator. Helpful for figuring out what the
@@ -1051,6 +1059,7 @@
 		1  (when (:lookup-accounts fs)       lookup-accounts-gen)
 		1  (when (:lookup-transfers fs)      lookup-transfers-gen)
 		1  (when (:get-account-transfers fs) get-account-transfers-gen)
+    1  (when (:get-account-balances fs)  get-account-balances-gen)
 		1  (when (:query-accounts fs)        query-accounts-gen)
 		1  (when (:query-transfers fs)       query-transfers-gen)))
 

@@ -16,7 +16,8 @@
             [jepsen.tigerbeetle [core :refer [cluster-id port]]]
             [potemkin :refer [definterface+]]
             [slingshot.slingshot :refer [try+ throw+]])
-  (:import (com.tigerbeetle AccountBatch
+  (:import (com.tigerbeetle AccountBalanceBatch
+                            AccountBatch
                             AccountFilter
                             AccountFlags
                             Batch
@@ -246,7 +247,7 @@
 
 ; Deserialization
 
-(defn account-batch-current->clj
+(defn read-account-batch
   "Reads a single account map off an AccountBatch"
   [^AccountBatch b]
   {:id              (bigint (UInt128/asBigInteger (.getId b)))
@@ -260,7 +261,7 @@
    :debits-pending  (.getDebitsPending b)
    :debits-posted   (.getDebitsPosted b)})
 
-(defn transfer-batch-current->clj
+(defn read-transfer-batch
   "Reads a single transfer map off a TransferBatch"
   [^TransferBatch b]
   {:id                 (bigint (UInt128/asBigInteger (.getId b)))
@@ -275,6 +276,15 @@
    :timeout            (.getTimeout b)
    :timestamp          (.getTimestamp b)})
 
+(defn read-account-balance-batch
+  "Reads a single accoutn balance map off an AccountBalanceBatch."
+  [^AccountBalanceBatch b]
+  {:timestamp       (.getTimestamp b)
+   :credits-pending (.getCreditsPending b)
+   :credits-posted  (.getCreditsPosted b)
+   :debits-pending  (.getDebitsPending b)
+   :debits-posted   (.getDebitsPosted b)})
+
 (extend-protocol Datafiable
   AccountBatch
   (datafy [b]
@@ -283,7 +293,7 @@
       (if-not (.next b)
         ; End of batch
         (persistent! accounts)
-        (recur (conj! accounts (account-batch-current->clj b))))))
+        (recur (conj! accounts (read-account-batch b))))))
 
   QueryFilter
   (datafy [f]
@@ -367,9 +377,9 @@
   responsible for producing this response. Guarantees the result vector is 1:1
   with the ID vector. With no IDs, just returns the response vector."
   ([res]
-   (read-batch account-batch-current->clj res))
+   (read-batch read-account-batch res))
   ([ids ^AccountBatch res]
-   (mapv (partial bm/get (index-batch account-batch-current->clj res))
+   (mapv (partial bm/get (index-batch read-account-batch res))
          ids)))
 
 (defn transfer-batch->clj
@@ -377,10 +387,15 @@
   of IDs responsible for producing this response. Guarantees the result vector
   is 1:1 with the ID vector. With no IDs, just returns the response vector."
   ([res]
-   (read-batch transfer-batch-current->clj res))
+   (read-batch read-transfer-batch res))
   ([ids res]
-   (mapv (partial bm/get (index-batch transfer-batch-current->clj res))
+   (mapv (partial bm/get (index-batch read-transfer-batch res))
          ids)))
+
+(defn account-balance-batch->clj
+  "Converts an account balance batch to a Clojure vector."
+  [res]
+  (read-batch read-account-balance-batch res))
 
 ; Primary tracking
 
@@ -464,6 +479,13 @@
                            {:timestamp   The server timestamp for this operation
                             :value       A vector of matching transfers}")
 
+  (get-account-balances [this account-filter]
+                         "Takes a client and a map representing an account
+                         filter. Returns
+
+                           {:timestamp   The server timestamp for this operation
+                            :value       A vector of matching account balances}")
+
   (deref+ [this fut]
           "Takes a future. Dereferences the future, throwing and closing on
           timeout.")
@@ -520,6 +542,12 @@
           res (deref+ this (.getAccountTransfersAsync client req))]
       (with-timestamp res
         (transfer-batch->clj res))))
+
+  (get-account-balances [this filter]
+    (let [req (account-filter filter)
+          res (deref+ this (.getAccountBalancesAsync client req))]
+      (with-timestamp res
+        (account-balance-batch->clj res))))
 
   (deref+ [this fut]
     (let [res (deref fut timeout ::timeout)]

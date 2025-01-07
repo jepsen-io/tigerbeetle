@@ -22,7 +22,8 @@
     :lookup-transfers
     :query-accounts
     :query-transfers
-    :get-account-transfers})
+    :get-account-transfers
+    :get-account-balances})
 
 (def read-account-fs
   "A set of :fs that return a vector of accounts."
