@@ -587,7 +587,7 @@
 
 (defn create-transfer-basic-error
   "A few basic errors that can occur when creating a transfer"
-  [errors import? id code flags]
+  [errors import? id flags]
   (cond ; Already failed
         (bm/contains? errors id)
         :id-already-failed
@@ -598,9 +598,6 @@
 
         (= uint128-max id)
         :id-must-not-be-int-max
-
-        (= 0 code)
-        :code-must-not-be-zero
 
         ; Import mismatch
         (and import? (not (:imported flags)))
@@ -613,6 +610,12 @@
              (or (:closing-credit flags)
                  (:closing-debit flags)))
         :closing-transfer-must-be-pending))
+
+(defn create-transfer-code-error
+  "Checking for code = 0 happens after pending transfer stuff"
+  [code]
+  (cond (= 0 code)
+        :code-must-not-be-zero))
 
 (defn create-transfer-timestamp-error
   "Errors related to timestamps during transfer creation"
@@ -640,10 +643,17 @@
       (when (not (= 0 ts))
         :timestamp-must-be-zero))))
 
-(defn create-transfer-closed-error
-  "Errors involving a closed account, or closing/reopening an account."
+(defn create-transfer-account-error
+  "Errors involving the accounts of a transfer."
   [flags debit-account credit-account]
-  (cond ; You can't do anything except void a closed account.
+  (cond ; Accounts must exist
+        (nil? debit-account)
+        :debit-account-not-found
+
+        (nil? credit-account)
+        :credit-account-not-found
+
+        ; You can't do anything except void a closed account.
         (and (not (:void-pending-transfer flags))
              (:closed (:flags debit-account)))
         :debit-account-already-closed
@@ -1058,18 +1068,21 @@
                                  credit-account-id)
            debit-account-id (or (:debit-account-id pending)
                                 debit-account-id)
+           debit-account  (bm/get accounts debit-account-id)
+           credit-account (bm/get accounts credit-account-id)
 
            _ (when-let [err (or (create-transfer-basic-error
-                                  errors import? id code flags)
+                                  errors import? id flags)
                                 (create-transfer-flags-error flags)
                                 (create-transfer-extant-error transfer extant)
                                 (create-transfer-timestamp-error
                                   timestamp transfer-timestamp import?
                                   credit-account debit-account transfer)
-                                (create-transfer-closed-error
-                                  flags debit-account credit-account)
                                 (create-transfer-pending-error
                                   transfer pending-id pending)
+                                (create-transfer-account-error
+                                  flags debit-account credit-account)
+                                (create-transfer-code-error code)
                                 (create-transfer-*-account-id-error
                                   credit-account-id debit-account-id))]
                (return err))
@@ -1077,12 +1090,6 @@
            _ (when (and (not (:pending flags))
                         (< 0 (:timeout transfer 0)))
                  (return :timeout-reserved-for-pending-transfer))
-
-           ; Fetch accounts
-           debit-account (or (bm/get accounts debit-account-id)
-                             (return :debit-account-not-found))
-           credit-account (or (bm/get accounts credit-account-id)
-                              (return :credit-account-not-found))
 
            ; Same-value constraints
            _ (when (not= (:ledger credit-account)
