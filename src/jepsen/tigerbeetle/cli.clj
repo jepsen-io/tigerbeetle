@@ -165,6 +165,11 @@
     :parse-fn keyword
     :validate [#{:one :all} "Must be one or all"]]
 
+   [nil "--concurrency NUMBER" "How many workers should we run? Must be an integer, optionally followed by n (e.g. 3n) to multiply by the number of nodes."
+    :default  "3n"
+    :validate [(partial re-find #"^\d+n?$")
+               "Must be an integer, optionally followed by n."]]
+
    [nil "--db-node-targets TARGETS" "A comma-separated list of ways to target DB nodes for faults, like 'one,majority'"
     :default [:one :primaries :majority :all]
     :parse-fn parse-comma-kws
