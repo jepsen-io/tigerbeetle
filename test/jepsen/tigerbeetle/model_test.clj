@@ -1067,10 +1067,6 @@
                              :timeout 1)]
                      [:imported-event-timeout-must-be-zero])))))
 
-(deftest create-transfer-*-account-already-closed-test
-  ; TODO: punting on account closure for now
-  )
-
 (deftest create-transfer-overflows-*-test
   (let [half (inc (bigint (/ uint128-max 2)))
         third (inc (bigint (/ uint128-max 3)))
@@ -1259,6 +1255,17 @@
                      [(assoc a1'
                              :debits-posted 1N
                              :credits-posted 1N)])))))
+
+(deftest post-close-test
+  ; The docs make it sound like closure should *always* be reversible, which
+  ; would rule out being able to post a closing transfer.
+  (is (consistent?
+        (-> init0
+            (ca-step [a1 a2] [:ok :ok])
+            (ct-step [(t 10N a1 a2 0N #{:pending :closing-debit})
+                      (assoc (t 11N a1 a2 0N #{:post-pending-transfer})
+                             :code 10N, :pending-id 10N)]
+                     [:ok :debit-account-already-closed])))))
 
 (deftest double-close-test
   (is (consistent?
