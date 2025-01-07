@@ -541,7 +541,7 @@
 																	id)))
           ; TODO: other flags
           pending? (< (dg/double) 1/2)
-          closing? (< (dg/double) 1/128)
+          closing? (< (dg/double) 1/8192)
 					flags (cond-> #{}
                   ; Half of transfers are pending
 									pending? (conj :pending)
