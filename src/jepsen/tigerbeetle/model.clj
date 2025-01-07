@@ -236,6 +236,10 @@
                           "Returns a vector of transfers matching the given
                           account filter.")
 
+  (get-account-balances- [model account-filter]
+                         "Returns a vector of account balances matching the
+                         given account filter.")
+
   (query-accounts- [model query-filter]
                   "Returns a vector of accounts matching the given query
                   filter.")
@@ -264,6 +268,10 @@
   (get-account-transfers [model invoke op]
                          "Applies a single get-account-transfers operation to
                          the model, returning model'")
+
+  (get-account-balances [model invoke op]
+                        "Applies a single get-account-balances operation to the
+                        model, returning model'")
 
   (query-accounts [model invoke op]
                   "Applies a single query-accounts operation to the model,
@@ -777,6 +785,42 @@
         true
         (update account :credits-posted + amount)))))
 
+(defn historical-balance
+  "Constructs a historical balance from an account and a timestamp."
+  [timestamp {:keys [debits-pending credits-pending
+                     debits-posted  credits-posted]}]
+  {:timestamp timestamp
+   :debits-pending debits-pending
+   :debits-posted debits-posted
+   :credits-pending credits-pending
+   :credits-posted credits-posted})
+
+(defn transfer-update-historical-balances-update-account
+  "Helper for transfer-update-historical-balances--updates a single account
+  sub-map within the historical balances map."
+  [balances timestamp account]
+  (bim/put (or balances (bim/int-map))
+           timestamp
+           (historical-balance timestamp account)))
+
+(defn transfer-update-historical-balances
+  "Called to update the historical balances when we perform a transfer. Takes
+  the historical-balances map, a timestamp, and the debit and credit accounts.
+  Returns a new historical balances map."
+  [historical-balances timestamp debit-account credit-account]
+  (cond-> historical-balances
+    ; Debit account
+    (:history (:flags debit-account))
+    (bm/update (:id debit-account)
+               transfer-update-historical-balances-update-account
+               timestamp debit-account)
+
+    ; Credit account
+    (:history (:flags credit-account))
+    (bm/update (:id credit-account)
+               transfer-update-historical-balances-update-account
+               timestamp credit-account)))
+
 (defn update-secondary-index
   "Updates a secondary index to fold in a new account or transfer. Takes the
   index, the value for the key `k-val` we want to index on (e.g. the code), and
@@ -853,6 +897,8 @@
    ^long transfer-timestamp ; The last transfer timestamp created
    accounts  ; A map of account IDs to accounts
    transfers ; A map of transfer IDs to transfers
+   ; A map of account-id -> timestamp -> account-balance.
+   historical-balances
 
    ; A map of permanent errors (TigerBeetle calls these *transient*
    ; errors, but they persist forever)
@@ -1249,10 +1295,17 @@
                           :credit
                           pending
                           amount'
-                          flags))]
+                          flags))
+
+           ; And historical balances
+           historical-balances' (transfer-update-historical-balances
+                                  historical-balances ts
+                                  (bm/get accounts' debit-account-id)
+                                  (bm/get accounts' credit-account-id))]
       (assoc this'
              :accounts                 accounts'
              :transfers                transfers'
+             :historical-balances      historical-balances'
              :speculative-error        speculative-error'
              :transfer-index           transfer-index'
              :transfer-debit-index     transfer-debit-index'
@@ -1434,9 +1487,8 @@
           (bm-union (bm/get transfer-credit-index account-id)))
         ; Restrict by user-data
         (bm-intersection
-          (when user-data (bm/get transfer-user-data-index
-                                  user-data
-                                  (bim/int-map))))
+          (when user-data
+            (bm/get transfer-user-data-index user-data (bim/int-map))))
         ; Restrict by code
         (bm-intersection
           (when code (bm/get transfer-code-index code (bim/int-map))))
@@ -1470,6 +1522,89 @@
            :actual      actual
            :diff        (diff-map expected actual)}))))
 
+  (get-account-balances- [this {:keys [account-id
+                                       user-data
+                                       code
+                                       timestamp-min
+                                       timestamp-max
+                                       limit
+                                       flags]
+                                :as account-filter}]
+    ; This looks almost exactly like get-account-transfers, but we can't use
+    ; that directly because the linear scan where we limit results would limit
+    ; *transfers*, not *balances*.
+    ;
+    ; Begin our search with the involved accounts
+    (let [pool
+          (-> (cond-> (bim/int-map)
+                (:debits flags)
+                (bm-union (bm/get transfer-debit-index account-id))
+                (:credits flags)
+                (bm-union (bm/get transfer-credit-index account-id)))
+              ; Restrict by user-data
+              (bm-intersection
+                (when user-data
+                  (bm/get transfer-user-data-index user-data (bim/int-map))))
+              ; Restrict by code
+              (bm-intersection
+                (when code
+                  (bm/get transfer-code-index code (bim/int-map))))
+              ; Restrict by timestamp
+              (bim-slice timestamp-min timestamp-max))
+          ; Linear scan. This is pretty close to query-scan, but that uses the
+          ; IDs and we actually need the timestamps.
+          n     (b/size pool)
+          reversed (:reversed flags)
+          dir   (if reversed -1 1)
+          start (if reversed (dec n) 0)
+          ; We're only interested in balances for this single account
+          balances (bm/get historical-balances account-id (bim/int-map))]
+      (info :account-id account-id)
+      (info :code code)
+      (info :pool pool)
+      (info :balances (datafy balances))
+      (loop [i       start
+             results (transient [])]
+        (cond ; Full
+              (= (count results) limit)
+              (persistent! results)
+
+              ; Out of bounds
+              (not (< -1 i n))
+              (persistent! results)
+
+              ; Check this timestamp
+              true
+              (let [i'    (+ i dir)
+                    ts    (bm/key (b/nth pool i))
+                    ; Find the corresponding balance
+                    balance (bim/get balances ts)]
+                (info :ts ts :balance balance)
+                (if balance
+                  (recur i' (conj! results balance))
+                  (recur i' results)))))))
+
+  (get-account-balances [this invoke ok]
+    (let [account-filter (:value invoke)
+          expected (get-account-balances- this account-filter)
+          actual    (:value ok)
+          n         (count expected)]
+      ; Compare expected to actual
+      (if (= expected actual)
+        ; Good
+        (assoc this
+               :op-count (inc op-count)
+               :event-count (inc event-count))
+        ; Uh oh
+        (inconsistent
+          {:type        :get-account-balances
+           :op-count    op-count
+           :event-count event-count
+           :filter      account-filter
+           :expected    expected
+           :actual      actual
+           :diff        (diff-map expected actual)}))))
+
   IModel
   (step [this invoke ok]
     ;(info "Model applying" (:f invoke) (:value invoke) (:value ok))
@@ -1482,6 +1617,7 @@
                   :query-accounts        (query-accounts this invoke ok)
                   :query-transfers       (query-transfers this invoke ok)
                   :get-account-transfers (get-account-transfers this invoke ok)
+                  :get-account-balances  (get-account-balances this invoke ok)
                   )]
       (if (inconsistent? this')
         (assoc this'
@@ -1505,6 +1641,7 @@
             :transfer-timestamp            -1
             :accounts                      bm/empty
             :transfers                     bm/empty
+            :historical-balances           bm/empty
             :errors                        bm/empty
             :speculative-error             nil
             :account-index                 bm/empty

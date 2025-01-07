@@ -153,6 +153,10 @@
   "Shorthand for a query-transfers step."
   (partial step* :query-transfers))
 
+(def gab-step
+  "Shorthand for a get-account-balances step"
+  (partial step* :get-account-balances))
+
 (defn consistent?
   "Not inconsistent? Returns consistent models."
   [model]
@@ -1715,3 +1719,35 @@
     (is (consistent?
           (qa-step model {:limit 28, :flags #{:reversed}}
                    [a2' a1'])))))
+
+(deftest get-account-balances-test
+  (let [; balance for account 1 just after timestamp 10N
+        b1-10 {:timestamp 210N, :debits-pending 0N, :debits-posted 2N, :credits-pending 0N, :credits-posted 0N}
+        b1-11 {:timestamp 211N, :debits-pending 0N, :debits-posted 2N, :credits-pending 5N, :credits-posted 0N}
+        ; And on account 2
+        b2-10 {:timestamp 210N, :debits-pending 0N, :debits-posted 0N, :credits-pending 0N, :credits-posted 2N}
+        b2-11 {:timestamp 211N, :debits-pending 5N, :debits-posted 0N, :credits-pending 0N, :credits-posted 2N}]
+    (is (consistent?
+          (-> init0
+              (ca-step [(assoc a1 :flags #{:history})
+                        (assoc a2 :flags #{:history})]
+                       [:ok :ok])
+              (ct-step [(t 10N a1 a2 2N)
+                        (t 11N a2 a1 5N #{:pending})]
+                       [:ok :ok])
+              ; Every balance on a1
+              (gab-step {:account-id 1N, :flags #{:debits :credits}}
+                        [b1-10 b1-11])
+              ; Just balances from transfers crediting a2
+              (gab-step {:account-id 2N, :flags #{:credits}}
+                        [b2-10])
+              ; Only balances with transfers with code 11
+              (gab-step {:account-id 2N, :code 11N, :flags #{:debits :credits}}
+                        [b2-11])
+              ; Or user-data 10
+              (gab-step {:account-id 1N, :user-data 10N, :flags #{:debits :credits}}
+                        [b1-10])
+              ; Reversed and limited
+              (gab-step {:account-id 2N, :flags #{:debits :credits :reversed}, :limit 1}
+                        [b2-11])
+              )))))
