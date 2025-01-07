@@ -540,9 +540,16 @@
 																	(recur (dec tries))
 																	id)))
           ; TODO: other flags
+          pending? (< (dg/double) 1/2)
+          closing? (< (dg/double) 1/128)
 					flags (cond-> #{}
                   ; Half of transfers are pending
-									(< (dg/double) 1/2) (conj :pending)
+									pending? (conj :pending)
+                  ; Pending transfers have a small chance to close
+                  (and pending? closing? (< (dg/double) 1/2))
+                  (conj :closing-debit)
+                  (and pending? closing? (< (dg/double) 1/2))
+                  (conj :closing-credit)
                   ; Often we use balancing credits/debits
                   (< (dg/double) 1/3) (conj :balancing-credit)
                   (< (dg/double) 1/3) (conj :balancing-debit))]
