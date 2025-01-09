@@ -11,6 +11,7 @@
                     [util :as util]
                     [role :as role]]
             [jepsen.nemesis.combined :as nc]
+            [jepsen.tigerbeetle [db :as db]]
             [slingshot.slingshot :refer [try+ throw+]]))
 
 (defn package-gen-helper
@@ -86,18 +87,87 @@
             :f :reset-clock
             :value (:nodes test)})))}))
 
+; TigerBeetle-specific file corruptions
+(defrecord FileCorruptionNemesis []
+  n/Nemesis
+  (setup! [this test]
+    this)
+
+  (invoke! [this test {:keys [f value] :as op}]
+    (case f
+      ; Reformat any nodes that look like they need it.
+      :maybe-reformat
+      (assoc op :value (c/on-nodes test (:nodes test) db/maybe-reformat!))))
+
+  (teardown! [this test]
+    this)
+
+  n/Reflection
+  (fs [this]
+    [:maybe-reformat]))
+
+
+(defrecord FileCorruptionGenerator [gen targets safe-nodes]
+  gen/Generator
+  (op [this test ctx]
+    (if (nil? safe-nodes)
+      ; The first time we execute, we select a majority of nodes to remain safe
+      (let [nodes       (:nodes test)
+            m           (util/majority (count nodes))
+            safe-nodes  (set (take m (shuffle nodes)))]
+        (gen/op (assoc this :safe-nodes safe-nodes) test ctx))
+
+      ; We have a safe node.
+      (let [target (rand-nth targets)
+            nodes  (->> (nc/db-nodes test (:db test) target)
+                        (remove safe-nodes)
+                        vec)]
+        (if (empty? nodes)
+          ; Re-draw
+          (gen/op this test ctx)
+          ; Great, we have nodes. Ask the normal file corruption generator for
+          ; an op and replace its nodes with ours.
+          (when-let [[op gen'] (gen/op gen test ctx)]
+            (if (identical? :pending op)
+              [:pending this]
+              [(update op :value assoc 0 nodes)
+               (assoc this :gen gen')]))))))
+
+  (update [this test ctx op]
+    (assoc this :gen (gen/update gen test ctx op))))
+
+(defn file-corruption-package
+  "A generator of file corruption operations. For TigerBeetle, we want to
+  ensure that one node is never corrupted. Otherwise, this is basically like
+  `nemesis.combined/file-corruption-package`."
+  [{:keys [db faults file-corruption interval] :as opts}]
+  ; Start with the stock file corruption package
+  (let [pkg (nc/file-corruption-package opts)
+        ; Then replace the generator
+        targets (:targets file-corruption (nc/node-specs db))
+        gen     (when-let [gen (:generator pkg)]
+                  (gen/mix [(repeat {:type :info, :f :maybe-reformat})
+                            (FileCorruptionGenerator. gen targets nil)]))]
+    (assoc pkg
+           :generator gen
+           ; We use the standard file-corruption nemesis and perf
+           :nemesis n/noop
+           :perf   nil)))
+
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."
   [opts]
   (let [opts (update opts :faults set)
         packages
         (->> (concat
-               ; Standard packages
-               (nc/nemesis-packages opts)
-               [(large-clock-skew-package opts)]))
+               ; Standard packages, except we do file corruption ourselves.
+               (nc/nemesis-packages
+                 (update opts :faults disj :file-corruption))
+               [(large-clock-skew-package opts)
+                (file-corruption-package opts)]))
 
         nsp (:stable-period opts)]
-    (info :packages (map (comp n/fs :nemesis) packages))
+    ;(info :packages (map (comp n/fs :nemesis) packages))
 
     (cond-> (nc/compose-packages packages)
       nsp (assoc :generator (package-gen nsp packages)))))

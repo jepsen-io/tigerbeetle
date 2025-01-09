@@ -2,7 +2,7 @@
   "Database automation"
   (:require [clojure [string :as str]]
             [clojure.tools.logging :refer [info warn]]
-            [jepsen [control :as c]
+            [jepsen [control :as c :refer [|]]
                     [db :as db]
                     [util :refer [meh]]]
             [jepsen.control [net :as cn]
@@ -60,8 +60,8 @@
         (info "Installing TigerBeetle from remote URL" url)
         (cu/install-archive! url bin)))))
 
-(defn configure!
-  "Writes the initial data file."
+(defn format!
+  "Writes a fresh data file."
   [test node]
   (c/su
     (c/exec bin :format
@@ -69,6 +69,32 @@
             (str "--replica=" (replica-index test node))
             (str "--replica-count=" (count (:nodes test)))
             data-file)))
+
+(defn data-corrupt?
+  "Checks to see if the most recent log message is about file corruption."
+  []
+  (c/su
+    (try+
+      (c/exec :tail :-f log-file |
+                 :grep "data file inode size was truncated or corrupted")
+      true
+      (catch [:exit 1] _
+        false))))
+
+(defn maybe-reformat!
+  "If we corrupt enough of a disk file, the node will crash on startup
+  complaining of a corrupt data file. This function checks for that log message
+  and, if found, formats a fresh data file."
+  [test node]
+  (when (data-corrupt?)
+    (format!)
+    :formatted))
+
+(defn configure!
+  "Configures the node for operation."
+  [test node]
+  (format! test node))
+
 
 (defn addresses
   "Computes the comma-separated address list for each node in the cluster."

@@ -36,7 +36,7 @@
             [dom-top.core :refer [loopr reducer]]
             [jepsen [generator :as gen]
                     [history :as h]
-                    [util :as util]]
+                    [util :as util :refer [zipf zipf-default-skew]]]
             [jepsen.tigerbeetle [core :refer [bireduce]]
                                 [lifecycle-map :as lm]]
             [potemkin :refer [definterface+]])
@@ -121,49 +121,6 @@
 					gens         (mapv second weight-gens)]
 			(WeightedMix. total-weight weights gens
 										(rand-weighted-index total-weight weights)))))
-
-(defn b-inverse-cdf
-  "Inverse cumulative distribution function for the zipfian bounding function
-  used in `zipf`."
-  (^double [^double skew ^double t ^double p]
-           (let [tp (* t p)]
-             (if (<= tp 1)
-               ; Clamp so we don't fly off to infinity
-               tp
-               (Math/pow (+ (* tp (- 1 skew))
-                            skew)
-                         (/ (- 1 skew)))))))
-
-(def zipf-skew
-  "When we choose zipf-distributed things, what skew do we generally pick?"
-  1.001)
-
-(defn zipf
-  "Selects a Zipfian-distributed integer in [0, n) with a given skew
-  factor. Adapted from the rejection sampling technique in
-  https://jasoncrease.medium.com/rejection-sampling-the-zipf-distribution-6b359792cffa."
-  ([^long n]
-   (zipf 1.000001 n))
-  ([^double skew ^long n]
-   (if (= n 0)
-     0
-     (do (assert (not= 1.0 skew)
-                 "Sorry, our approximation can't do skew = 1.0! Try a small epsilon, like 1.0001")
-         (let [t (/ (- (Math/pow n (- 1 skew)) skew)
-                    (- 1 skew))]
-           (loop []
-             (let [inv-b         (b-inverse-cdf skew t (dg/double))
-                   sample-x      (long (+ 1 inv-b))
-                   y-rand        (dg/double)
-                   ratio-top     (Math/pow sample-x (- skew))
-                   ratio-bottom  (/ (if (<= sample-x 1)
-                                      1
-                                      (Math/pow inv-b (- skew)))
-                                    t)
-                   rat (/ ratio-top (* t ratio-bottom))]
-               (if (< y-rand rat)
-                 (dec sample-x)
-                 (recur)))))))))
 
 (defn zipf-nth
   "Selects a random element from a Bifurcan collection with a Zipfian
@@ -277,16 +234,16 @@
         subkeys (bm/keys submap)]
     (cond ; IDs pool is empty; use anything from the submap
           (= 0 n)
-          (zipf-nth zipf-skew subkeys (fallback-id))
+          (zipf-nth zipf-default-skew subkeys (fallback-id))
 
           ; Submap is empty; fall back to pool
           (= 0 (b/size submap))
-          (zipf-nth zipf-skew ids (fallback-id))
+          (zipf-nth zipf-default-skew ids (fallback-id))
 
           ; When one collection is small, just intersect them
           (or (<= (b/size ids) 128)
               (<= (b/size subkeys) 128))
-          (zipf-nth zipf-skew
+          (zipf-nth zipf-default-skew
                     (bs/intersection ids subkeys)
                     (fallback-id))
 
@@ -302,7 +259,7 @@
                   ; TODO: This intersection is probably too expensive for long
                   ; runs; might need to fall back. I'm still trying to tune
                   ; this to get something that succeeds reasonably often.
-                  (zipf-nth zipf-skew (bs/intersection ids subkeys)
+                  (zipf-nth zipf-default-skew (bs/intersection ids subkeys)
                             (fallback-id)))
               (let [id (zipf-nth ids)]
                 (if (bs/contains? subkeys id)
@@ -468,20 +425,24 @@
         ; the window of uncertainty for an account, we have a high chance to
         ; try it, but we *don't* fall back to unlikely IDs as soon as that
         ; account is read.
-        (or (when (< 0.4 r)  (zipf-nth zipf-skew (lm/likely accounts) nil))
-            (when (< 0.05 r) (zipf-nth zipf-skew (lm/seen accounts)   nil))
+        (or (when (< 0.4 r)
+              (zipf-nth zipf-default-skew (lm/likely accounts) nil))
+            (when (< 0.05 r)
+              (zipf-nth zipf-default-skew (lm/seen accounts)   nil))
             ; Sometimes an unlikely account
-            (zipf-nth zipf-skew (lm/unlikely accounts) nil)
+            (zipf-nth zipf-default-skew (lm/unlikely accounts) nil)
             ; If no options, make up a key
             (bm/->entry [(fallback-id) nil])))))
 
 	(rand-transfer-id [this]
     (let [r (dg/double)]
       (bm/key
-        (or (when (< 0.4 r)  (zipf-nth zipf-skew (lm/likely transfers) nil))
-            (when (< 0.05 r) (zipf-nth zipf-skew (lm/seen transfers)   nil))
+        (or (when (< 0.4 r)
+              (zipf-nth zipf-default-skew (lm/likely transfers) nil))
+            (when (< 0.05 r)
+              (zipf-nth zipf-default-skew (lm/seen transfers)   nil))
             ; Rarely, unlikely
-            (zipf-nth zipf-skew (lm/unlikely transfers) nil)
+            (zipf-nth zipf-default-skew (lm/unlikely transfers) nil)
             ; Make something up
             (bm/->entry [(bigint (inc (zipf 10))) nil])))))
 
@@ -569,7 +530,7 @@
 			 :flags             flags}))
 
   (gen-new-transfer-2 [this id]
-    (when-let [pending-id (zipf-nth zipf-skew pending-transfer-ids
+    (when-let [pending-id (zipf-nth zipf-default-skew pending-transfer-ids
                                ; If we can't do a pending ID, we've got a small
                                ; chance to try any transfer ID. There's a good
                                ; chance that during the test the pending set is

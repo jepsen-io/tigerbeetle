@@ -35,7 +35,8 @@
     :pause
     :partition
     :clock
-    :large-clock})
+    :large-clock
+    :file-corruption})
 
 (def db-node-targets
   "Different ways we can target single nodes for database faults."
@@ -53,6 +54,7 @@
    [:partition]
    [:kill]
    [:pause]
+   [:file-corruption]
    [:clock]
    ; General chaos
    [:partition :pause :kill :clock]])
@@ -110,6 +112,15 @@
                          ;:partition     {:targets [:one ::majority]}
                          :pause         {:targets (:db-node-targets opts)}
                          :kill          {:targets (:db-node-targets opts)}
+                         :file-corruption
+                         {:targets (:db-node-targets opts)
+                          :corruptions [{:type :truncate
+                                         :file db/data-file
+                                         :drop
+                                         {:distribution :zipf
+                                          ;:skew 1.001
+                                          ; Up to 10 GB
+                                          :n (* 1024 1024 1024 10)}}]}
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload
