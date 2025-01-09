@@ -31,6 +31,10 @@
                             TransferBatch
                             TransferFlags
                             UInt128)
+           (java.util.concurrent Executors
+                                 ScheduledExecutorService
+                                 ScheduledFuture
+                                 TimeUnit)
            (java.util Arrays)))
 
 ; Helpers
@@ -563,8 +567,8 @@
   (close [this]
     (close! this)))
 
-(defn open
-  "Opens a client to the given node."
+(defn open-tb-client
+  "Opens a raw TigerBeetle client given a test and node."
   [test node]
   (let [addrs (case (:client-nodes test)
                 ; Client can only take IP addresses, not hostnames. Clients
@@ -583,8 +587,127 @@
                 (map (fn [some-node]
                        (str (cn/ip some-node) ":" port))
                      (:nodes test)))]
-    (TrackingClient.
-      (Client. (UInt128/asBytes cluster-id) (into-array addrs))
-      node
-      (:primary-tracker test)
-      (:timeout test))))
+      (Client. (UInt128/asBytes cluster-id) (into-array addrs))))
+
+(defn open-tracking-client
+  "Opens a client to the given node."
+  [test node]
+  (TrackingClient.
+    (open-tb-client test node)
+    node
+    (:primary-tracker test)
+    (:timeout test)))
+
+(defmacro timeout-client-call
+  "For the TimeoutClient, a helper macro for calling synchronous TB client
+  methods with timeouts. Takes a TimeoutClient and a body form, which must make
+  and return exactly one synchronous API call to the client.
+
+  Before evaluating body, schedules a timeout task on the executor. If the body
+  evaluates before the timeout task triggers, returns the body normally. If the
+  timeout task triggers first, the client is closed. Often, this should cause
+  the body to return or throw some kind of error. I'm not sure what that is yet
+  because TB's docs say it's impossible: clients 'never time out' and 'does not
+  surface network errors'.
+
+  Rarely, the synchronous call will return, but the client will close *anyway*,
+  due to a race between the synchronous call and the timeout task."
+  [client, & body]
+  (let [client (vary-meta client assoc :tag 'TimeoutClient)]
+    `(let [executor#  (.executor ~client)
+           timeout#   (.timeout ~client)
+           ; tb-client# (.client ~client)
+           ; A task to close the client on timeout. This has at least one race
+           ; condition: the client might return successfully *while* the timeout
+           ; task is running, causing the client to close for what looks like no
+           ; reason. Hopefully this doesn't happen that often.
+           timeout-task# (fn ~'timeout-task [] (close! ~client))
+           ; Schedule that timeout task
+           executor-task# (.schedule executor#
+                                     timeout-task#
+                                     timeout#
+                                     TimeUnit/MILLISECONDS)
+           ; Make the synchronous call
+           res# (do ~@body)]
+       ; We completed; cancel the timeout task and return
+       (.cancel executor-task# true)
+       res#)))
+
+(defrecord TimeoutClient
+  [^Client client   ; TB client
+   node             ; What node are we bound to?
+   ^long timeout    ; Timeout, in ms
+   primary-tracker  ; Who do we think is primary?
+   ^ScheduledExecutorService executor]
+
+  IClient
+  (create-accounts! [this accounts]
+    (let [req (account-batch accounts)
+          res (timeout-client-call this (.createAccounts client req))]
+      (primary-tracker-write-completed! primary-tracker node)
+      (with-timestamp res (create-account-result-batch->clj req res))))
+
+  (create-transfers! [this transfers]
+    (let [req (transfer-batch transfers)
+          res (timeout-client-call this (.createTransfers client req))]
+      (primary-tracker-write-completed! primary-tracker node)
+      (with-timestamp res (create-transfer-result-batch->clj req res))))
+
+  (lookup-accounts [this ids]
+    (let [req (id-batch ids)
+          res  (timeout-client-call this (.lookupAccounts client req))]
+      (with-timestamp res (account-batch->clj ids res))))
+
+  (lookup-transfers [this ids]
+    (let [req (id-batch ids)
+          res (timeout-client-call this (.lookupTransfers client req))]
+      (with-timestamp res (transfer-batch->clj ids res))))
+
+  (query-accounts [this filter]
+    (let [req (query-filter filter)
+          res (timeout-client-call this(.queryAccounts client req))]
+      (with-timestamp res (account-batch->clj res))))
+
+  (query-transfers [this filter]
+    (let [req (query-filter filter)
+          res (timeout-client-call this (.queryTransfers client req))]
+      (with-timestamp res (transfer-batch->clj res))))
+
+  (get-account-transfers [this filter]
+    (let [req (account-filter filter)
+          res (timeout-client-call this (.getAccountTransfers client req))]
+      (with-timestamp res
+        (transfer-batch->clj res))))
+
+  (get-account-balances [this filter]
+    (let [req (account-filter filter)
+          res (timeout-client-call this (.getAccountBalances client req))]
+      (with-timestamp res
+        (account-balance-batch->clj res))))
+
+  (close! [this]
+          (.close client)
+          ; Wonder what happens when an executor shuts down itself...
+          (.shutdownNow executor))
+
+  java.lang.AutoCloseable
+  (close [this]
+         (close! this)))
+
+(defn open-timeout-client
+  "TigerBeetle's team suggest that (contrary to documentation) there may
+  actually be specific error codes throwable by callers. It's just that the
+  only way to get them is to close the client. This client wraps a TB client
+  with a timeout thread which schedules .close() operations."
+  [test node]
+  (TimeoutClient.
+    (open-tb-client test node)
+    node
+    (:timeout test)
+    (:primary-tracker test)
+    (Executors/newScheduledThreadPool 1)))
+
+(defn open
+  "Opens a client to the given node."
+  [test node]
+  (open-timeout-client test node))

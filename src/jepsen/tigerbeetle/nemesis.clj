@@ -106,7 +106,6 @@
   (fs [this]
     [:maybe-reformat]))
 
-
 (defrecord FileCorruptionGenerator [gen targets safe-nodes]
   gen/Generator
   (op [this test ctx]
