@@ -695,10 +695,10 @@
          (close! this)))
 
 (defn open-timeout-client
-  "TigerBeetle's team suggest that (contrary to documentation) there may
-  actually be specific error codes throwable by callers. It's just that the
-  only way to get them is to close the client. This client wraps a TB client
-  with a timeout thread which schedules .close() operations."
+  "This client uses a scheduled executor to call .close() on clients when the
+  timeout passes. It doesn't seem any more useful than getting timeouts from
+  the futures the async methods return--as far as I can tell every failed call
+  throws an IllegalStateException: Client closed, with no hint as to why."
   [test node]
   (TimeoutClient.
     (open-tb-client test node)
@@ -710,4 +710,6 @@
 (defn open
   "Opens a client to the given node."
   [test node]
-  (open-timeout-client test node))
+  ;(open-timeout-client test node)
+  (open-tracking-client test node)
+  )
