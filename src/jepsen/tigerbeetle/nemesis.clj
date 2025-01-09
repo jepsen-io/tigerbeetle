@@ -145,13 +145,17 @@
         ; Then replace the generator
         targets (:targets file-corruption (nc/node-specs db))
         gen     (when-let [gen (:generator pkg)]
-                  (gen/mix [(repeat {:type :info, :f :maybe-reformat})
-                            (FileCorruptionGenerator. gen targets nil)]))]
+                  (gen/any (->> {:type :info, :f :maybe-reformat}
+                                gen/repeat
+                                (gen/stagger interval))
+                           (FileCorruptionGenerator. gen targets nil)))]
     (assoc pkg
-           :generator gen
-           ; We use the standard file-corruption nemesis and perf
-           :nemesis n/noop
-           :perf   nil)))
+           :generator       gen
+           :final-generator (when gen
+                              [{:type :info, :f :maybe-reformat}
+                               {:type :info, :f :start, :value :all}])
+           :nemesis         (FileCorruptionNemesis.)
+           :perf            nil)))
 
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."

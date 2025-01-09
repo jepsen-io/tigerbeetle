@@ -75,7 +75,7 @@
   []
   (c/su
     (try+
-      (c/exec :tail :-f log-file |
+      (c/exec :tail :-n 2 log-file |
                  :grep "data file inode size was truncated or corrupted")
       true
       (catch [:exit 1] _
@@ -87,7 +87,8 @@
   and, if found, formats a fresh data file."
   [test node]
   (when (data-corrupt?)
-    (format!)
+    (c/su (c/exec :rm :-f data-file))
+    (format! test node)
     :formatted))
 
 (defn configure!
