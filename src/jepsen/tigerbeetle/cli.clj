@@ -36,7 +36,8 @@
     :partition
     :clock
     :large-clock
-    :file-corruption})
+    :file-corruption
+    :corrupt-file-chunks-helix})
 
 (def db-node-targets
   "Different ways we can target single nodes for database faults."
@@ -54,10 +55,11 @@
    [:partition]
    [:kill]
    [:pause]
-   [:file-corruption]
+   [:file-corruption :kill]
+   [:corrupt-file-chunks-helix :kill]
    [:clock]
    ; General chaos
-   [:partition :pause :kill :clock]])
+   [:partition :pause :kill :clock :file-corruption]])
 
 (def special-nemeses
   "A map of special nemesis names to collections of faults."
@@ -114,13 +116,18 @@
                          :kill          {:targets (:db-node-targets opts)}
                          :file-corruption
                          {:targets (:db-node-targets opts)
-                          :corruptions [{:type :truncate
+                          :corruptions [; Truncations up to 10 GB
+                                        {:type :truncate
                                          :file db/data-file
                                          :drop
                                          {:distribution :zipf
-                                          ;:skew 1.001
-                                          ; Up to 10 GB
-                                          :n (* 1024 1024 1024 10)}}]}
+                                          :n (* 1024 1024 1024 10)}}
+                                        ; Bitflips every 1 kB, 1 MB, or 1 GB.
+                                        {:type :bitflip
+                                         :file db/data-file
+                                         :probability
+                                         {:distribution :one-of
+                                          :values [1e-6 1e-9]}}]}
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload

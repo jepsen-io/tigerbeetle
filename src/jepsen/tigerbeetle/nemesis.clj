@@ -10,7 +10,9 @@
                     [net :as net]
                     [util :as util]
                     [role :as role]]
-            [jepsen.nemesis.combined :as nc]
+            [jepsen.nemesis [combined :as nc]
+                            [file :as nf]
+                            [time :as nt]]
             [jepsen.tigerbeetle [db :as db]]
             [slingshot.slingshot :refer [try+ throw+]]))
 
@@ -90,8 +92,7 @@
 ; TigerBeetle-specific file corruptions
 (defrecord FileCorruptionNemesis []
   n/Nemesis
-  (setup! [this test]
-    this)
+  (setup! [this test] this)
 
   (invoke! [this test {:keys [f value] :as op}]
     (case f
@@ -157,6 +158,26 @@
            :nemesis         (FileCorruptionNemesis.)
            :perf            nil)))
 
+(defn corrupt-file-chunks-helix-package
+  "A nemesis package which introduces file corruptions in a helical pattern
+  across the cluster. Divides files into chunks of 16 MB and corrupts every
+  chunk on exactly one node."
+  [{:keys [faults interval] :as opts}]
+  (let [needed? (faults :corrupt-file-chunks-helix)]
+    {:nemesis   (nf/corrupt-file-nemesis
+                  {:file db/data-file
+                   :chunk-size (* 1024 1024 16)})
+     :generator (when needed?
+                  (->> (gen/any (nf/corrupt-file-chunks-helix-gen)
+                                (gen/repeat {:type :info, :f :maybe-reformat}))
+                       (gen/stagger interval)))
+     :final-generator (when needed?
+                        [{:type :info, :f :maybe-reformat}
+                         {:type :info, :f :start, :value :all}])
+     :perf #{{:name   "corrupt-file-chunks"
+              :fs     #{:corrupt-file-chunks}
+              :color "#D2E9A0"}}}))
+
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."
   [opts]
@@ -167,6 +188,7 @@
                (nc/nemesis-packages
                  (update opts :faults disj :file-corruption))
                [(large-clock-skew-package opts)
+                (corrupt-file-chunks-helix-package opts)
                 (file-corruption-package opts)]))
 
         nsp (:stable-period opts)]
