@@ -70,24 +70,28 @@
             (str "--replica-count=" (count (:nodes test)))
             data-file)))
 
-(defn data-corrupt?
+(def corrupt-file-log-patterns
+  "Log lines we might see if a node crashes due to a corrupt disk file."
+  [#"data file inode size was truncated or corrupted"
+   #"superblock not found"])
+
+(defn corrupt-file?
   "Checks to see if the most recent log message is about file corruption."
   []
-  (let [patterns [#"data file inode size was truncated or corrupted"
-                  #"superblock not found"]]
-    (c/su
-      (try+
-        (let [log (c/exec :tail :-n 2 log-file)]
-          (boolean (some #(re-find % log) patterns)))
-        (catch [:exit 1] _
-          false)))))
+  (c/su
+    (try+
+      (let [log (c/exec :tail :-n 2 log-file)]
+        (boolean (some #(re-find % log)
+                       corrupt-file-log-patterns)))
+      (catch [:exit 1] _
+        false))))
 
 (defn maybe-reformat!
   "If we corrupt enough of a disk file, the node will crash on startup
   complaining of a corrupt data file. This function checks for that log message
   and, if found, formats a fresh data file."
   [test node]
-  (when (data-corrupt?)
+  (when (corrupt-file?)
     (c/su (c/exec :rm :-f data-file))
     (format! test node)
     :formatted))

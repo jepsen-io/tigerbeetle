@@ -99,6 +99,23 @@
        (when-let [n (:nemesis opts)]
          (str " " (->> n (map name) sort (str/join ","))))))
 
+(defn panic-checker
+  "Looks for panic messages in the log file, *except* for panics we expect to
+  cause, like missing superblocks."
+  []
+  (let [checker (checker/log-file-pattern #"panic: " "tigerbeetle.log")]
+    (reify checker/Checker
+      (check [this test history opts]
+        (let [res (checker/check checker test history opts)
+              interesting-matches
+              (remove (fn [match]
+                        (some #(re-find % (:line match))
+                              db/corrupt-file-log-patterns))
+                      (:matches res))]
+          (if (seq interesting-matches)
+            res
+            (assoc res :valid? true)))))))
+
 (defn tb-test
   "Takes CLI options and constructs a Jepsen test map"
   [opts]
@@ -167,6 +184,7 @@
                          :clock      (checker/clock-plot)
                          :stats      (checker/stats)
                          :exceptions (checker/unhandled-exceptions)
+                         :panic      (panic-checker)
                          :workload   (:checker workload)})
             :client    (:client workload)
             :nemesis   (:nemesis nemesis jepsen.nemesis/noop)
