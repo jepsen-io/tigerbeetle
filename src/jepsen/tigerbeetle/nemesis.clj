@@ -175,8 +175,10 @@
                         [{:type :info, :f :maybe-reformat}
                          {:type :info, :f :start, :value :all}])
      :perf #{{:name   "corrupt-file-chunks"
-              :fs     #{:corrupt-file-chunks}
-              :color "#D2E9A0"}}}))
+              :fs     #{:corrupt-file-chunks :maybe-reformat}
+              :start  #{}
+              :stop   #{}
+              :color  "#D2E9A0"}}}))
 
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."

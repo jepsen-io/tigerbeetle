@@ -73,13 +73,14 @@
 (defn data-corrupt?
   "Checks to see if the most recent log message is about file corruption."
   []
-  (c/su
-    (try+
-      (c/exec :tail :-n 2 log-file |
-                 :grep "data file inode size was truncated or corrupted")
-      true
-      (catch [:exit 1] _
-        false))))
+  (let [patterns [#"data file inode size was truncated or corrupted"
+                  #"superblock not found"]]
+    (c/su
+      (try+
+        (let [log (c/exec :tail :-n 2 log-file)]
+          (boolean (some #(re-find % log) patterns)))
+        (catch [:exit 1] _
+          false)))))
 
 (defn maybe-reformat!
   "If we corrupt enough of a disk file, the node will crash on startup
