@@ -138,8 +138,8 @@
 
 (defn file-corruption-package
   "A generator of file corruption operations. For TigerBeetle, we want to
-  ensure that one node is never corrupted. Otherwise, this is basically like
-  `nemesis.combined/file-corruption-package`."
+  ensure in general that a majority of nodes are never corrupted. Otherwise,
+  this is basically like `nemesis.combined/file-corruption-package`."
   [{:keys [db faults file-corruption interval] :as opts}]
   ; Start with the stock file corruption package
   (let [pkg (nc/file-corruption-package opts)
@@ -158,18 +158,120 @@
            :nemesis         (FileCorruptionNemesis.)
            :perf            nil)))
 
+; Use `tigerbeetle inspect constants` to obtain these numbers.
+(def superblock-size
+  "Size of superblock, in bytes"
+  (* 96 1024))
+
+(def wal-headers-size
+  "Size of WAL headers, in bytes"
+  (* 256 1024))
+
+(def wal-prepares-size
+  "Size of WAL prepares, in bytes"
+  (* 1024 1024 1024))
+
+(def client-replies-size
+  "Size of client replies, in bytes"
+  (* 64 1024 1024))
+
+(def grid-padding-size
+  "Size of grid padding, in bytes"
+  (* 160 1024))
+
+(def grid-block-size
+  "How big is a block in the grid?"
+  (* 512 1024))
+
+(def superblock-zone
+  "The [lower, upper) region, in bytes, of the file devoted to storing the
+  superblock."
+  [0 superblock-size])
+
+(def wal-headers-zone
+  "The [lower, upper) region, in bytes, of the file devoted to WAL headers."
+  (let [start (second superblock-zone)]
+    [start (+ start wal-headers-size)]))
+
+(def wal-prepares-zone
+  "The [lower, upper) region, in bytes, of the file devoted to WAL prepares."
+  (let [start (second wal-headers-zone)]
+    [start (+ start wal-prepares-size)]))
+
+(def wal-zone
+  "The [lower, upper) region, in bytes, of the file devoted to the write-ahead
+  log"
+  [(first wal-headers-zone) (second wal-prepares-zone)])
+
+(def client-replies-zone
+  "The [lower, upper) region, in bytes, of the file devoted to storing client
+  replies."
+  (let [start (second wal-zone)]
+    [start (+ start client-replies-size)]))
+
+(def grid-zone
+  "The [lower, nil] region, in bytes, of the file devoted to storing grid
+  blocks. Here, `nil` signifies unbounded."
+  [(+ (second client-replies-zone) grid-padding-size) nil])
+
+(def file-zones
+  "A map of keyword zones (e.g. :wal) to [lower, upper) ranges of the file
+  where that zone is stored. Used to control where file corruption occurs."
+  {:superblock     superblock-zone
+   :wal-headers    wal-headers-zone
+   :wal-prepares   wal-prepares-zone
+   :wal            wal-zone
+   :client-replies client-replies-zone
+   :grid           grid-zone})
+
+(def file-zone-chunk-sizes
+  "We choose different chunk sizes for each zone of the file."
+  ; Each copy is 24 KB. Since all copies should be identical, there's not much
+  ; point to working with aligned chunks. This approach renders the whole
+  ; superblock swiss cheese
+  {:superblock     (* 5 1024)
+   :wal-headers    (* 4 1024)        ; Each sector is 4K
+   :wal-prepares   (* 1024 1024)     ; Each prepare is 1 MB
+   :wal            (* 1024 1024)
+   :client-replies (* 1024 1024)     ; Each reply is 1 MB
+   :grid           (* 512 1024 10)}) ; Each block is 512 KB
+
 (defn corrupt-file-chunks-helix-package
   "A nemesis package which introduces file corruptions in a helical pattern
   across the cluster. Divides files into chunks of 16 MB and corrupts every
   chunk on exactly one node."
   [{:keys [faults interval] :as opts}]
-  (let [needed? (faults :corrupt-file-chunks-helix)]
+  (let [needed? (faults :corrupt-file-chunks-helix)
+        ; Augment a corrupt-file-chunks operation with a :zone (for humans) and
+        ; :start/:end (for the nemesis).
+        add-zone (if-let [zones (:file-zones opts)]
+                   (fn add-zone [op]
+                     (let [zone (rand-nth zones)
+                           [start end] (get file-zones zone)
+                           chunk-size (get file-zone-chunk-sizes zone)
+                           value' (map (fn [corruption]
+                                         (assoc corruption
+                                                :zone  zone
+                                                :start start
+                                                :end   end
+                                                :chunk-size chunk-size))
+                                       (:value op))]
+                       (assoc op :value value')))
+                   ; No zones
+                   identity)]
+    (info :zones (:file-zones opts))
     {:nemesis   (nf/corrupt-file-nemesis
                   {:file db/data-file
+                   ; By default, 16 MB
                    :chunk-size (* 1024 1024 16)})
      :generator (when needed?
-                  (->> (gen/any (nf/corrupt-file-chunks-helix-gen)
-                                (gen/repeat {:type :info, :f :maybe-reformat}))
+                  (->> (gen/any
+                         (->> (nf/corrupt-file-chunks-helix-gen)
+                              (gen/map add-zone))
+                         ; If we break a superblock, we'll need to reformat the
+                         ; node
+                         (->> {:type :info, :f :maybe-reformat}
+                              (gen/repeat)))
                        (gen/stagger interval)))
      :final-generator (when needed?
                         [{:type :info, :f :maybe-reformat}

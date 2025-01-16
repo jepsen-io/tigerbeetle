@@ -145,6 +145,7 @@
                                          :probability
                                          {:distribution :one-of
                                           :values [1e-6 1e-9]}}]}
+                         :file-zones    (:nemesis-file-zones opts)
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload
@@ -229,6 +230,11 @@
     :parse-fn parse-nemesis-spec
     :validate [(partial every? (into nemeses (keys special-nemeses)))
                (str (cli/one-of nemeses) " or the special nemeses, which " (cli/one-of special-nemeses))]]
+
+   [nil "--nemesis-file-zones ZONES" "A comma-separated list of zones we want to interfere with in data files. Only works with corrupt-file-chunks-helix."
+    :parse-fn parse-comma-kws
+    :validate [(partial every? nemesis/file-zones)
+               (cli/one-of nemesis/file-zones)]]
 
    [nil "--nemesis-interval SECS" "Roughly how long between nemesis operations."
     :default  10
