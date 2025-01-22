@@ -236,37 +236,96 @@
    :client-replies (* 1024 1024)     ; Each reply is 1 MB
    :grid           (* 512 1024 10)}) ; Each block is 512 KB
 
-(defn corrupt-file-chunks-helix-package
+(defn add-zone-fn
+  "Takes a vector of zone names like [:superblock]. Returns a function which
+  takes a nemesis op for file corruptions, and fills in :zone, :start, :end,
+  and :chunk-size options for each corruption. Zones can be nil, in which case
+  we return identity."
+  [zones]
+  (if zones
+    (fn add-zone [op]
+      (let [zone (rand-nth zones)
+            [start end] (get file-zones zone)
+            chunk-size (get file-zone-chunk-sizes zone)
+            value' (map (fn [corruption]
+                          (assoc corruption
+                                 :zone  zone
+                                 :start start
+                                 :end   end
+                                 :chunk-size chunk-size))
+                        (:value op))]
+        (assoc op :value value')))
+    identity))
+
+(defn global-snapshot-package
+  "This should ABSOLUTELY mess things up. We'll kill every node, roll back all
+  their data files, then restart them."
+  [{:keys [faults interval] :as opts}]
+  (let [needed? (faults :global-snapshot)]
+    {:nemesis nil ; Handled by copy-file-chunks-helix-package
+     :generator
+     (when needed?
+       (gen/cycle
+         [{:type :info, :f :kill, :value :all}
+          (gen/once
+            (fn [test ctx]
+              {:type :info,
+               :f :snapshot-file-chunks,
+               :value (mapv (fn [node]
+                              {:node node
+                               :chunk-size (* 1024 1024 1024 1024)})
+                           (:nodes test))}))
+          {:type :info, :f :start, :value :all}
+          (gen/sleep 10) ; Here's where the work happens
+          {:type :info, :f :kill, :value :all}
+          (gen/once
+            (fn [test ctx]
+              {:type :info,
+               :f :restore-file-chunks,
+               :value (mapv (fn [node]
+                              {:node node
+                               :chunk-size (* 1024 1024 1024 1024)})
+                           (:nodes test))}))
+          {:type :info, :f :start, :value :all}
+          (gen/sleep 10) ; And more work here
+          ]))
+     :final-generator {:type :info, :f :start, :value :all}}))
+
+(defn snapshot-file-chunks-package
+  "A nemesis package which snapshots and restores the given zone of the data
+  file, in its entirety, on selected nodes."
+  [{:keys [faults interval file-zones] :as opts}]
+  (let [needed? (faults :snapshot-file-chunks)
+        add-zone (add-zone-fn file-zones)]
+    {:nemesis nil ; Handled by copy-file-chunks-helix-package
+     :generator (when needed?
+                  (->> (nf/snapshot-file-chunks-nodes-gen
+                         #_ (comp util/minority count :nodes)
+                         1)
+                       (gen/map add-zone)
+                       (gen/stagger interval)))
+     :perf #{{:name  "snapshot-file-chunks"
+              :fs    #{:snapshot-file-chunks :restore-file-chunks}
+              :start #{}
+              :stop  #{}
+              :color "#D2E9A0"}}}))
+
+(defn copy-file-chunks-helix-package
   "A nemesis package which introduces file corruptions in a helical pattern
   across the cluster. Divides files into chunks of 16 MB and corrupts every
   chunk on exactly one node."
-  [{:keys [faults interval] :as opts}]
-  (let [needed? (faults :corrupt-file-chunks-helix)
+  [{:keys [faults interval file-zones] :as opts}]
+  (let [needed? (faults :copy-file-chunks-helix)
         ; Augment a corrupt-file-chunks operation with a :zone (for humans) and
         ; :start/:end (for the nemesis).
-        add-zone (if-let [zones (:file-zones opts)]
-                   (fn add-zone [op]
-                     (let [zone (rand-nth zones)
-                           [start end] (get file-zones zone)
-                           chunk-size (get file-zone-chunk-sizes zone)
-                           value' (map (fn [corruption]
-                                         (assoc corruption
-                                                :zone  zone
-                                                :start start
-                                                :end   end
-                                                :chunk-size chunk-size))
-                                       (:value op))]
-                       (assoc op :value value')))
-                   ; No zones
-                   identity)]
-    (info :zones (:file-zones opts))
+        add-zone (add-zone-fn file-zones)]
     {:nemesis   (nf/corrupt-file-nemesis
                   {:file db/data-file
                    ; By default, 16 MB
                    :chunk-size (* 1024 1024 16)})
      :generator (when needed?
                   (->> (gen/any
-                         (->> (nf/corrupt-file-chunks-helix-gen)
+                         (->> (nf/copy-file-chunks-helix-gen)
                               (gen/map add-zone))
                          ; If we break a superblock, we'll need to reformat the
                          ; node
@@ -276,8 +335,8 @@
      :final-generator (when needed?
                         [{:type :info, :f :maybe-reformat}
                          {:type :info, :f :start, :value :all}])
-     :perf #{{:name   "corrupt-file-chunks"
-              :fs     #{:corrupt-file-chunks :maybe-reformat}
+     :perf #{{:name   "copy-file-chunks"
+              :fs     #{:copy-file-chunks :maybe-reformat}
               :start  #{}
               :stop   #{}
               :color  "#D2E9A0"}}}))
@@ -292,7 +351,9 @@
                (nc/nemesis-packages
                  (update opts :faults disj :file-corruption))
                [(large-clock-skew-package opts)
-                (corrupt-file-chunks-helix-package opts)
+                (copy-file-chunks-helix-package opts)
+                (snapshot-file-chunks-package opts)
+                (global-snapshot-package opts)
                 (file-corruption-package opts)]))
 
         nsp (:stable-period opts)]

@@ -75,6 +75,11 @@
   [#"data file inode size was truncated or corrupted"
    #"superblock not found"])
 
+(def expected-file-log-patterns
+  "Log lines we expect to see."
+  (into corrupt-file-log-patterns
+        [#"another process holds the data file lock"]))
+
 (defn corrupt-file?
   "Checks to see if the most recent log message is about file corruption."
   []

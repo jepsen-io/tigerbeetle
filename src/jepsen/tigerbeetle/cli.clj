@@ -37,7 +37,9 @@
     :clock
     :large-clock
     :file-corruption
-    :corrupt-file-chunks-helix})
+    :snapshot-file-chunks
+    :global-snapshot
+    :copy-file-chunks-helix})
 
 (def db-node-targets
   "Different ways we can target single nodes for database faults."
@@ -56,7 +58,8 @@
    [:kill]
    [:pause]
    [:file-corruption :kill]
-   [:corrupt-file-chunks-helix :kill]
+   [:snapshot-file-chunks :kill]
+   [:copy-file-chunks-helix :kill]
    [:clock]
    ; General chaos
    [:partition :pause :kill :clock :file-corruption]])
@@ -110,7 +113,7 @@
               interesting-matches
               (remove (fn [match]
                         (some #(re-find % (:line match))
-                              db/corrupt-file-log-patterns))
+                              db/expected-file-log-patterns))
                       (:matches res))]
           (if (seq interesting-matches)
             res
