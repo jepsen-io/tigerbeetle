@@ -73,7 +73,8 @@
 (def corrupt-file-log-patterns
   "Log lines we might see if a node crashes due to a corrupt disk file."
   [#"data file inode size was truncated or corrupted"
-   #"superblock not found"])
+   #"superblock not found"
+   #"superblock quorum lost"])
 
 (def expected-file-log-patterns
   "Log lines we expect to see."
