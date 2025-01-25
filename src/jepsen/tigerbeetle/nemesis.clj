@@ -214,6 +214,17 @@
   blocks. Here, `nil` signifies unbounded."
   [(+ (second client-replies-zone) grid-padding-size) nil])
 
+(def file-targets
+  "A set of ways we can target nodes for file corruption. :one, :minority,
+  :majority, and :all target subsets of the test's nodes, picking a fixed
+  subset for the duration of the test, and can affect the entire file. :helix
+  targets all nodes, but picks disjoint chunks of the file."
+  #{:one
+    :minority
+    :majority
+    :all
+    :helix})
+
 (def file-zones
   "A map of keyword zones (e.g. :wal) to [lower, upper) ranges of the file
   where that zone is stored. Used to control where file corruption occurs."
@@ -226,10 +237,7 @@
 
 (def file-zone-chunk-sizes
   "We choose different chunk sizes for each zone of the file."
-  ; Each copy is 24 KB. Since all copies should be identical, there's not much
-  ; point to working with aligned chunks. This approach renders the whole
-  ; superblock swiss cheese
-  {:superblock     (* 5 1024)
+  {:superblock     (* 24 1024)       ; Each copy is 24K
    :wal-headers    (* 4 1024)        ; Each sector is 4K
    :wal-prepares   (* 1024 1024)     ; Each prepare is 1 MB
    :wal            (* 1024 1024)
@@ -238,9 +246,9 @@
 
 (defn add-zone-fn
   "Takes a vector of zone names like [:superblock]. Returns a function which
-  takes a nemesis op for file corruptions, and fills in :zone, :start, :end,
-  and :chunk-size options for each corruption. Zones can be nil, in which case
-  we return identity."
+  takes a nemesis op for file corruptions, picks a random zone, and fills in
+  :zone, :start, :end, :chunk-size, and :probability options for each
+  corruption. Zones can be nil, in which case we return identity."
   [zones]
   (if zones
     (fn add-zone [op]
@@ -248,11 +256,18 @@
             [start end] (get file-zones zone)
             chunk-size (get file-zone-chunk-sizes zone)
             value' (map (fn [corruption]
-                          (assoc corruption
-                                 :zone  zone
-                                 :start start
-                                 :end   end
-                                 :chunk-size chunk-size))
+                          (cond-> (assoc corruption
+                                         :zone  zone
+                                         :start start
+                                         :end   end
+                                         :chunk-size chunk-size)
+                            ; If we're doing a bitflip, add a probability
+                            (= :bitflip-file-chunks (:f op))
+                            (assoc :probability
+                                   ; 2 flips per chunk ought to do it--we don't
+                                   ; want to go too low, lest we do nothing at
+                                   ; all.
+                                   (double (/ 2 chunk-size)))))
                         (:value op))]
         (assoc op :value value')))
     identity))
@@ -299,7 +314,10 @@
         add-zone (add-zone-fn file-zones)]
     {:nemesis nil ; Handled by copy-file-chunks-helix-package
      :generator (when needed?
-                  (->> (nf/snapshot-file-chunks-nodes-gen
+                  (->> (gen/flip-flop
+                         (gen/repeat {:type :info, :f :snapshot-file-chunks})
+                         (gen/repeat {:type :info, :f :restore-file-chunks}))
+                       (nf/nodes-gen
                          #_ (comp util/minority count :nodes)
                          1)
                        (gen/map add-zone)
@@ -309,6 +327,98 @@
               :start #{}
               :stop  #{}
               :color "#D2E9A0"}}}))
+
+(defn corrupt-file-package
+  "A nemesis package for file corruptions."
+  [{:keys [faults interval corrupt-file] :as opts}]
+  (let [{:keys [targets zones]} corrupt-file
+        ; These are the specific faults we can perform
+        faults (set/intersection faults
+                                 #{:bitflip-file-chunks
+                                   :copy-file-chunks
+                                   :snapshot-file-chunks})
+        needed? (seq faults)
+        ; Generator of core faults, with no values attached
+        f-gen (->> faults
+                   (mapv
+                     {:bitflip-file-chunks
+                      (gen/repeat {:type :info, :f :bitflip-file-chunks})
+
+                      :copy-file-chunks
+                      (gen/repeat {:type :info, :f :bitflip-file-chunks})
+
+                      :snapshot-file-chunks
+                      (gen/flip-flop
+                        (gen/repeat
+                          {:type :info, :f :snapshot-file-chunks})
+                        (gen/repeat
+                          {:type :info, :f :restore-file-chunks}))})
+                   gen/mix)
+        ; Provide values which target specific nodes, indexes, and moduli
+        gen (case targets
+              :helix    (nf/helix-gen f-gen)
+              :one      (nf/nodes-gen 1 f-gen)
+              :minority (nf/nodes-gen (comp util/minority count :nodes)
+                                      f-gen)
+              :majority (nf/nodes-gen (comp util/majority count :nodes)
+                                      f-gen)
+              :all      (nf/nodes-gen (comp count :nodes)
+                                      f-gen))
+        ; To those faults, attach zones with :start, :stop, :chunk-size, etc
+        gen (gen/map (add-zone-fn zones) gen)
+        ; If we are performing anything other than a helical fault, we may
+        ; corrupt the superblock entirely, requiring a reformat.
+        reformat? (not (#{:helix} targets))
+        gen (if reformat?
+              (gen/any gen
+                       (gen/repeat {:type :info, :f :maybe-reformat}))
+              gen)
+        ; And slow down
+        gen (gen/stagger interval gen)]
+    {:nemesis         (nf/corrupt-file-nemesis
+                        {:file db/data-file
+                         ; By default, 16 MB
+                         :chunk-size (* 1024 1024 16)})
+     :generator       (when needed? gen)
+     :final-generator (when (and needed? reformat?)
+                        [{:type :info, :f :maybe-reformat}
+                         {:type :info, :f :start, :value :all}])
+     :perf #{{:name   "corrupt-file"
+              :fs     #{:bitflip-file-chunks
+                        :copy-file-chunks
+                        :snapshot-file-chunks
+                        :restore-file-chunks
+                        :maybe-reformat}
+              :start  #{}
+              :stop   #{}
+              :color  "#D2E9A0"}}}))
+
+(defn bitflip-file-chunks-helix-package
+  "A nemesis package which causes bitflips in selected zones of a data file,
+  in a helical pattern across all nodes."
+  [{:keys [faults interval file-zones] :as opts}]
+  (let [needed? (faults :bitflip-file-chunks-helix)]
+    {; Nemesis provided by copy-file-chunks-helix-package
+     :generator (when needed?
+                  (->> (gen/any
+                         (->> {:type :info, :f :bitflip-file-chunks}
+                              gen/repeat
+                              nf/helix-gen
+                              (gen/map (add-zone-fn file-zones)))
+                         ; I think we can get away without this, so long as
+                         ; we constrain ourselves to correct zone/block
+                         ; alignment
+                         #_(->> {:type :info, :f :maybe-reformat}
+                              (gen/repeat)))
+                       (gen/stagger interval)))
+     :final-generator (when needed?
+                        [#_{:type :info, :f :maybe-reformat}
+                         {:type :info, :f :start, :value :all}])
+     :perf #{{:name   "bitflip-file-chunks"
+              :fs     #{:bitflip-file-chunks}
+              :start  #{}
+              :stop   #{}
+              :color  "#D2E9A0"}}}))
 
 (defn copy-file-chunks-helix-package
   "A nemesis package which introduces file corruptions in a helical pattern
@@ -325,7 +435,9 @@
                    :chunk-size (* 1024 1024 16)})
      :generator (when needed?
                   (->> (gen/any
-                         (->> (nf/copy-file-chunks-helix-gen)
+                         (->> {:type :info, :f :copy-file-chunks}
+                              gen/repeat
+                              nf/helix-gen
                               (gen/map add-zone))
                          ; If we break a superblock, we'll need to reformat the
                          ; node
@@ -351,8 +463,10 @@
                (nc/nemesis-packages
                  (update opts :faults disj :file-corruption))
                [(large-clock-skew-package opts)
-                (copy-file-chunks-helix-package opts)
-                (snapshot-file-chunks-package opts)
+                (corrupt-file-package opts)
+                ;(copy-file-chunks-helix-package opts)
+                ;(bitflip-file-chunks-helix-package opts)
+                ;(snapshot-file-chunks-package opts)
                 (global-snapshot-package opts)
                 (file-corruption-package opts)]))
 

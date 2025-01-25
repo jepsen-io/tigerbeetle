@@ -37,9 +37,10 @@
     :clock
     :large-clock
     :file-corruption
-    :snapshot-file-chunks
     :global-snapshot
-    :copy-file-chunks-helix})
+    :snapshot-file-chunks
+    :bitflip-file-chunks
+    :copy-file-chunks})
 
 (def db-node-targets
   "Different ways we can target single nodes for database faults."
@@ -59,10 +60,9 @@
    [:pause]
    [:file-corruption :kill]
    [:snapshot-file-chunks :kill]
-   [:copy-file-chunks-helix :kill]
    [:clock]
    ; General chaos
-   [:partition :pause :kill :clock :file-corruption]])
+   [:partition :pause :kill :clock]])
 
 (def special-nemeses
   "A map of special nemesis names to collections of faults."
@@ -99,6 +99,10 @@
          (:version opts))
        " " (name (:workload opts))
        " c=" (name (:client-nodes opts))
+       " t=" (name (:nemesis-file-targets opts))
+       " z=" (->> (:nemesis-file-zones opts)
+                  (map name)
+                  (str/join ","))
        (when-let [n (:nemesis opts)]
          (str " " (->> n (map name) sort (str/join ","))))))
 
@@ -141,14 +145,12 @@
                                          :file db/data-file
                                          :drop
                                          {:distribution :zipf
-                                          :n (* 1024 1024 1024 10)}}
-                                        ; Bitflips every 1 kB, 1 MB, or 1 GB.
-                                        {:type :bitflip
-                                         :file db/data-file
-                                         :probability
-                                         {:distribution :one-of
-                                          :values [1e-6 1e-9]}}]}
-                         :file-zones    (:nemesis-file-zones opts)
+                                          :n (* 1024 1024 1024 10)}}]}
+                         ; Not to be confused with file-corruption <sigh>; this
+                         ; is the new file corrupter we added
+                         :corrupt-file
+                         {:zones   (:nemesis-file-zones opts)
+                          :targets (:nemesis-file-targets opts)}
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload
@@ -234,8 +236,14 @@
     :validate [(partial every? (into nemeses (keys special-nemeses)))
                (str (cli/one-of nemeses) " or the special nemeses, which " (cli/one-of special-nemeses))]]
 
-   [nil "--nemesis-file-zones ZONES" "A comma-separated list of zones we want to interfere with in data files. Only works with corrupt-file-chunks-helix."
+   [nil "--nemesis-file-targets TARGETS" "Controls which nodes are targeted for disk faults. Can be one, minority, majority, all, or helix. Helix induces faults on every node, but arranges them so that no two chunks overlap. The others all target random subsets of a limited permutation of nodes throughout the test--minority, for example, picks a minority of nodes that can experience file corruption, and only causes faults there."
+    :parse-fn keyword
+    :default :minority
+    :validate [nemesis/file-targets (cli/one-of nemesis/file-targets)]]
+
+   [nil "--nemesis-file-zones ZONES" "A comma-separated list of zones we want to interfere with in data files. Only works with corrupt-file-chunks-helix. wal-headers and wal-prepares will break TigerBeetle with helical faults; superblock, client-replies, and grid should be safe everywhere."
     :parse-fn parse-comma-kws
+    :default [:superblock :client-replies :grid]
     :validate [(partial every? nemesis/file-zones)
                (cli/one-of nemesis/file-zones)]]
 
