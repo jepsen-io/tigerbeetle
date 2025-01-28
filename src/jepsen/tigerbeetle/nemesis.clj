@@ -368,7 +368,8 @@
         gen (gen/map (add-zone-fn zones) gen)
         ; If we are performing anything other than a helical fault, we may
         ; corrupt the superblock entirely, requiring a reformat.
-        reformat? (not (#{:helix} targets))
+        reformat? (and (not (#{:helix} targets))
+                       (some #{:superblock} zones))
         gen (if reformat?
               (gen/any gen
                        (gen/repeat {:type :info, :f :maybe-reformat}))
