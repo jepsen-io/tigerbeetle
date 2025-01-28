@@ -277,7 +277,7 @@
   their data files, then restart them."
   [{:keys [faults interval] :as opts}]
   (let [needed? (faults :global-snapshot)]
-    {:nemesis nil ; Handled by copy-file-chunks-helix-package
+    {:nemesis nil ; Handled by corrupt-file-package
      :generator
      (when needed?
        (gen/cycle
@@ -305,28 +305,6 @@
           (gen/sleep 10) ; And more work here
           ]))
      :final-generator {:type :info, :f :start, :value :all}}))
-
-(defn snapshot-file-chunks-package
-  "A nemesis package which snapshots and restores the given zone of the data
-  file, in its entirety, on selected nodes."
-  [{:keys [faults interval file-zones] :as opts}]
-  (let [needed? (faults :snapshot-file-chunks)
-        add-zone (add-zone-fn file-zones)]
-    {:nemesis nil ; Handled by copy-file-chunks-helix-package
-     :generator (when needed?
-                  (->> (gen/flip-flop
-                         (gen/repeat {:type :info, :f :snapshot-file-chunks})
-                         (gen/repeat {:type :info, :f :restore-file-chunks}))
-                       (nf/nodes-gen
-                         #_ (comp util/minority count :nodes)
-                         1)
-                       (gen/map add-zone)
-                       (gen/stagger interval)))
-     :perf #{{:name  "snapshot-file-chunks"
-              :fs    #{:snapshot-file-chunks :restore-file-chunks}
-              :start #{}
-              :stop  #{}
-              :color "#D2E9A0"}}}))
 
 (defn corrupt-file-package
   "A nemesis package for file corruptions."
@@ -394,66 +372,6 @@
               :stop   #{}
               :color  "#D2E9A0"}}}))
 
-(defn bitflip-file-chunks-helix-package
-  "A nemesis package which causes bitflips in selected zones of a data file,
-  in a helical pattern across all nodes."
-  [{:keys [faults interval file-zones] :as opts}]
-  (let [needed? (faults :bitflip-file-chunks-helix)]
-    {; Nemesis provided by copy-file-chunks-helix-package
-     :generator (when needed?
-                  (->> (gen/any
-                         (->> {:type :info, :f :bitflip-file-chunks}
-                              gen/repeat
-                              nf/helix-gen
-                              (gen/map (add-zone-fn file-zones)))
-                         ; I think we can get away without this, so long as
-                         ; we constrain ourselves to correct zone/block
-                         ; alignment
-                         #_(->> {:type :info, :f :maybe-reformat}
-                              (gen/repeat)))
-                       (gen/stagger interval)))
-     :final-generator (when needed?
-                        [#_{:type :info, :f :maybe-reformat}
-                         {:type :info, :f :start, :value :all}])
-     :perf #{{:name   "bitflip-file-chunks"
-              :fs     #{:bitflip-file-chunks}
-              :start  #{}
-              :stop   #{}
-              :color  "#D2E9A0"}}}))
-
-(defn copy-file-chunks-helix-package
-  "A nemesis package which introduces file corruptions in a helical pattern
-  across the cluster. Divides files into chunks of 16 MB and corrupts every
-  chunk on exactly one node."
-  [{:keys [faults interval file-zones] :as opts}]
-  (let [needed? (faults :copy-file-chunks-helix)
-        ; Augment a corrupt-file-chunks operation with a :zone (for humans) and
-        ; :start/:end (for the nemesis).
-        add-zone (add-zone-fn file-zones)]
-    {:nemesis   (nf/corrupt-file-nemesis
-                  {:file db/data-file
-                   ; By default, 16 MB
-                   :chunk-size (* 1024 1024 16)})
-     :generator (when needed?
-                  (->> (gen/any
-                         (->> {:type :info, :f :copy-file-chunks}
-                              gen/repeat
-                              nf/helix-gen
-                              (gen/map add-zone))
-                         ; If we break a superblock, we'll need to reformat the
-                         ; node
-                         (->> {:type :info, :f :maybe-reformat}
-                              (gen/repeat)))
-                       (gen/stagger interval)))
-     :final-generator (when needed?
-                        [{:type :info, :f :maybe-reformat}
-                         {:type :info, :f :start, :value :all}])
-     :perf #{{:name   "copy-file-chunks"
-              :fs     #{:copy-file-chunks :maybe-reformat}
-              :start  #{}
-              :stop   #{}
-              :color  "#D2E9A0"}}}))
-
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."
   [opts]
@@ -465,9 +383,6 @@
                  (update opts :faults disj :file-corruption))
                [(large-clock-skew-package opts)
                 (corrupt-file-package opts)
-                ;(copy-file-chunks-helix-package opts)
-                ;(bitflip-file-chunks-helix-package opts)
-                ;(snapshot-file-chunks-package opts)
                 (global-snapshot-package opts)
                 (file-corruption-package opts)]))
 
