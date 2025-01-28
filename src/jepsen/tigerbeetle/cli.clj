@@ -25,9 +25,17 @@
   {:none           (constantly tests/noop-test)
    :transfer       transfer/workload})
 
-(def all-workloads
+(def standard-workloads
   "All the workloads we run by default."
-  [:none])
+  [:transfer])
+
+(def db-node-targets
+  "Different ways we can target single nodes for database faults."
+  #{:one
+    :minority
+    :majority
+    :primaries
+    :all})
 
 (def nemeses
   "Basic nemeses we have available."
@@ -42,15 +50,13 @@
     :bitflip-file-chunks
     :copy-file-chunks})
 
-(def db-node-targets
-  "Different ways we can target single nodes for database faults."
-  #{:one
-    :minority
-    :majority
-    :primaries
-    :all})
+(def file-corruption-nemeses
+  "Which nemeses corrupt files (and therefore require file/zone targets)?"
+  #{:snapshot-file-chunks
+    :bitflip-file-chunks
+    :copy-file-chunks})
 
-(def all-nemeses
+(def standard-nemeses
   "Combinations of nemeses we run by default."
   [; Nothing
    []
@@ -58,16 +64,30 @@
    [:partition]
    [:kill]
    [:pause]
-   [:file-corruption :kill]
+   [:bitflip-file-chunks :kill]
+   [:copy-file-chunks :kill]
    [:snapshot-file-chunks :kill]
    [:clock]
    ; General chaos
-   [:partition :pause :kill :clock]])
+   [:partition :pause :kill :clock :bitflip-file-chunks :copy-file-chunks
+    :snapshot-file-chunks]])
 
 (def special-nemeses
   "A map of special nemesis names to collections of faults."
   {:none []
-   :all [:partition :pause :kill :clock]})
+   :all (peek standard-nemeses)})
+
+(def standard-file-corruption-opts
+  "A collection of maps defining combinations of file zones and node targets
+  for tests. We choose these carefully; TigerBeetle can't survive all kinds of
+  filesystem faults."
+  [; Minority faults are survivable everywhere.
+   {:nemesis-file-targets :minority
+    :nemesis-file-zones (keys nemesis/file-zones)}
+   ; Helical faults will break TB if we do them in the WAL. Otherwise they're
+   ; survivable.
+   {:nemesis-file-targets :helix
+    :nemesis-file-zones [:superblock :client-replies :grid]}])
 
 (defn parse-comma-kws
   "Takes a comma-separated string and returns a collection of keywords."
@@ -99,10 +119,11 @@
          (:version opts))
        " " (name (:workload opts))
        " c=" (name (:client-nodes opts))
-       " t=" (name (:nemesis-file-targets opts))
-       " z=" (->> (:nemesis-file-zones opts)
-                  (map name)
-                  (str/join ","))
+       (when (some file-corruption-nemeses (:nemesis opts))
+         (str " t=" (name (:nemesis-file-targets opts))
+              " z=" (->> (:nemesis-file-zones opts)
+                         (map name)
+                         (str/join ","))))
        (when-let [n (:nemesis opts)]
          (str " " (->> n (map name) sort (str/join ","))))))
 
@@ -126,11 +147,13 @@
 (defn tb-test
   "Takes CLI options and constructs a Jepsen test map"
   [opts]
-  (let [workload-name (:workload opts)
-        workload      ((workloads workload-name) opts)
+  (let [; Fill in defaults for nemesis-file-zones and nemesis-file-targets
+        opts            (merge (first standard-file-corruption-opts) opts)
+        workload-name   (:workload opts)
+        workload        ((workloads workload-name) opts)
         primary-tracker (client/primary-tracker)
-        db            (db/db opts)
-        os            debian/os
+        db              (db/db opts)
+        os              debian/os
         nemesis       (nemesis/package
                         {:db            db
                          :nodes         (:nodes opts)
@@ -238,12 +261,10 @@
 
    [nil "--nemesis-file-targets TARGETS" "Controls which nodes are targeted for disk faults. Can be one, minority, majority, all, or helix. Helix induces faults on every node, but arranges them so that no two chunks overlap. The others all target random subsets of a limited permutation of nodes throughout the test--minority, for example, picks a minority of nodes that can experience file corruption, and only causes faults there."
     :parse-fn keyword
-    :default :minority
     :validate [nemesis/file-targets (cli/one-of nemesis/file-targets)]]
 
    [nil "--nemesis-file-zones ZONES" "A comma-separated list of zones we want to interfere with in data files. Only works with corrupt-file-chunks-helix. wal-headers and wal-prepares will break TigerBeetle with helical faults; superblock, client-replies, and grid should be safe everywhere."
     :parse-fn parse-comma-kws
-    :default [:superblock :client-replies :grid]
     :validate [(partial every? nemesis/file-zones)
                (cli/one-of nemesis/file-zones)]]
 
@@ -299,14 +320,24 @@
 (defn all-tests
   "Turns CLI options into a sequence of tests."
   [opts]
-  (let [nemeses   (if-let [n (:nemesis opts)]  [n] all-nemeses)
-        workloads (if-let [w (:workload opts)] [w] all-workloads)]
+  (let [nemeses   (if-let [n (:nemesis opts)]  [n] standard-nemeses)
+        workloads (if-let [w (:workload opts)] [w] standard-workloads)
+        file-corruption-opts
+        (if (or (:nemesis-file-zones opts)
+                (:nemesis-file-targets opts))
+          ; Use specified faults exactly
+          [(select-keys opts [:nemesis-file-zones
+                              :nemesis-file-targets])]
+          ; Use defaults
+          standard-file-corruption-opts)]
     (for [i     (range (:test-count opts))
           n     nemeses
-          w     workloads]
-      (tb-test (assoc opts
-                      :nemesis  n
-                      :workload w)))))
+          w     workloads
+          fcos  file-corruption-opts]
+      (tb-test (-> opts
+                   (assoc :nemesis  n
+                          :workload w)
+                   (merge fcos))))))
 
 (defn -main
   "Handles command line arguments. Can either run a test, or a web server for
