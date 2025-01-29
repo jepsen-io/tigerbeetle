@@ -25,6 +25,16 @@
            (java.util.function Function
                                LongFunction)))
 
+(def ^:dynamic *safe*
+  "This is sort of a hack. We have some safety assertions which ensure that,
+  say, you can't add an ID to a lifecycle map more than once. When we do
+  idempotence tests, we deliberately *want* to do that, and don't care if it
+  messes up the distribution. We also don't want to thread
+  lifecycle-map-specific parameters all the way down through generator
+  construction. This dynamic variable lets us disable those safety checks for
+  the idempotence test."
+  true)
+
 ;; Lazy, virtual data structures formed by gluing together n disjoint
 ;; structures.
 
@@ -152,20 +162,22 @@
     (add-likely m (:id x) x))
 
   (add-likely [m id x]
-    (if (or (bm/contains? seen id)
-            (bm/contains? likely id)
-            (bm/contains? unlikely id))
-      (throw (IllegalStateException. (str "ID " (pr-str id) "already exists")))
+    (if (and *safe*
+             (or (bm/contains? seen id)
+                 (bm/contains? likely id)
+                 (bm/contains? unlikely id)))
+      (throw (IllegalStateException. (str "ID " (pr-str id) " already exists")))
       (LifecycleMap. seen (bm/put likely id x) unlikely)))
 
   (add-unlikely [this x]
     (add-unlikely this (:id x) x))
 
   (add-unlikely [this id x]
-    (if (or (bm/contains? seen id)
-            (bm/contains? likely id)
-            (bm/contains? unlikely id))
-      (throw (IllegalStateException. (str "ID " (pr-str id) "already exists")))
+    (if (and *safe*
+             (or (bm/contains? seen id)
+                 (bm/contains? likely id)
+                 (bm/contains? unlikely id)))
+      (throw (IllegalStateException. (str "ID " (pr-str id) " already exists")))
       (LifecycleMap. seen likely (bm/put unlikely id x))))
 
   (is-likely [this id]
