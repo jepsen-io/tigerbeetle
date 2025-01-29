@@ -16,14 +16,16 @@
                                 [core :refer [all-fs]]
                                 [db :as db]
                                 [nemesis :as nemesis]]
-            [jepsen.tigerbeetle.workload [transfer :as transfer]]
+            [jepsen.tigerbeetle.workload [transfer :as transfer]
+                                          [idempotence :as idempotence]]
             [jepsen.os.debian :as debian]))
 
 (def workloads
   "A map of workload names to functions that take CLI options and return
   workload maps"
   {:none           (constantly tests/noop-test)
-   :transfer       transfer/workload})
+   :transfer       transfer/workload
+   :idempotence    idempotence/workload})
 
 (def standard-workloads
   "All the workloads we run by default."
