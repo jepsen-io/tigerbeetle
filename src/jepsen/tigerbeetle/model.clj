@@ -563,7 +563,7 @@
     :exists-with-different-amount
 
     (not= user-data (:user-data extant))
-    :exists-with-different-user-data-128
+    :exists-with-different-user-data-64
 
     (not= ledger (:ledger extant))
     :exists-with-different-ledger
@@ -1004,9 +1004,9 @@
           (not= (:flags extant) flags)
           :exists-with-different-flags
 
-          ; We don't do 64/32, just 128
+          ; We don't do 128/32, just 64
           (not= (:user-data extant) user-data)
-          :exists-with-different-user-data-128
+          :exists-with-different-user-data-64
 
           (not= (:ledger extant) (:ledger account))
           :exists-with-different-ledger
