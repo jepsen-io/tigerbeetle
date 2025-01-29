@@ -323,8 +323,11 @@
   (let [nemeses   (if-let [n (:nemesis opts)]  [n] standard-nemeses)
         workloads (if-let [w (:workload opts)] [w] standard-workloads)
         file-corruption-opts
-        (if (or (:nemesis-file-zones opts)
-                (:nemesis-file-targets opts))
+        (if (or ; They requested a specific zone or target
+                (:nemesis-file-zones opts)
+                (:nemesis-file-targets opts)
+                ; Or the requested nemeses don't use them
+                (not-any? file-corruption-nemeses nemeses))
           ; Use specified faults exactly
           [(select-keys opts [:nemesis-file-zones
                               :nemesis-file-targets])]
