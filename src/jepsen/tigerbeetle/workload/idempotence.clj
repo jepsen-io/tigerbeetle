@@ -10,10 +10,13 @@
                           [set :as bs]]
             [clojure.core.match :refer [match]]
             [clojure.data.generators :as dg]
+            [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
             [jepsen [checker :as checker]
                     [generator :as gen]
-                    [util :refer [timeout zipf zipf-default-skew]]]
+                    [history :as h]
+                    [util :refer [timeout zipf zipf-default-skew
+                                  nil-if-empty]]]
             [jepsen.tigerbeetle [core :refer :all]
                                 [checker :as tigerbeetle.checker]
                                 [lifecycle-map :as lm]]
@@ -24,7 +27,8 @@
                                                   zipf-nth]]
                                          [client :refer [client]]]
             [potemkin :refer [definterface+]]
-            [slingshot.slingshot :refer [try+ throw+]]))
+            [slingshot.slingshot :refer [try+ throw+]]
+            [tesser.core :as t]))
 
 (defn poison
   "Takes a nice healthy vector of account or transfer maps and replaces some of
@@ -37,7 +41,8 @@
       (if (= i n)
         (persistent! events)
         (recur (inc i)
-               (if (< (dg/double) p)
+               (if (and (< (dg/double) p)
+                        (< 0 (b/size memory)))
                  ; Replace. We can either swap just the ID, or the entire value.
                  (if-let [replacement (zipf-nth memory)]
                    (assoc! events i
@@ -101,6 +106,12 @@
                   op (assoc op :value (poison value dup-p accounts))]
               [op (assoc this :gen gen' :accounts accounts)])
 
+            ; Create transfers
+            (identical? :create-transfers f)
+            (let [accounts (remember transfers max-size dup-p value)
+                  op (assoc op :value (poison value dup-p transfers))]
+              [op (assoc this :gen gen' :transfers transfers)])
+
             ; Some other f
             true
             [op (assoc this :gen gen')])))
@@ -131,6 +142,107 @@
   [gen]
   (UnsafeLM. (tb-gen/wrap-gen gen)))
 
+;; Checker
+
+
+(defn merge-cat
+  "Merge Bifurcan maps with list concat"
+  [m1 m2]
+  (bm/merge m1 m2 bl/concat))
+
+(t/deftransform bmap-merge-cat
+  "A Tesser transform that merges maps of lists with list concat."
+  []
+  (assert (nil? downstream))
+  {:reducer-identity  (comp b/linear bm/map)
+   :reducer           merge-cat
+   :post-reducer      identity
+   :combiner-identity (comp b/linear bm/map)
+   :combiner          merge-cat
+   :post-combiner     b/forked})
+
+(defn writes-by-id
+  "Takes a history and constructs a Bifurcan map of ID -> [w1, w2, ...], where
+  each w is an event map (e.g. an Account or Transfer), augmented with the
+  following keys:
+
+  :index   The history index of the invocation of the write
+  :index'  The history index of the completion of the write
+  :type    The type of the completion--:ok, :info, or :fail
+  :result  The result keyword (e.g. :ok, :credits-must-not-exceed-debits,
+            ...), or nil if unknown."
+  [history]
+  (h/ensure-pair-index history)
+  (->> (t/filter h/invoke?)
+       (t/map (fn per-op [op]
+                (let [op'   (h/completion history op)
+                      index (:index op)
+                      index' (:index op')
+                      type (:type op')]
+                  (bireduce (fn per-event [writes event result]
+                              (bm/put writes
+                                      (:id event)
+                                      (bl/list (assoc event
+                                                      :index   index
+                                                      :index'  index'
+                                                      :type    type
+                                                      :result  result))
+                                      bl/concat))
+                            (b/linear bm/empty)
+                            (:value op)
+                            (:value op')))))
+       bmap-merge-cat
+       (h/tesser history)))
+
+(defn duplicates
+  "Takes writes by ID, looks for duplicates. Returns a sequence of vectors,
+  each vector with duplicate events."
+  [writes-by-id]
+  (keep (fn dups [writes]
+          (let [oks (vec (filter #(= :ok (:result %)) writes))]
+            (when (< 1 (count oks))
+              oks)))
+        (bm/values writes-by-id)))
+
+(defn check-type
+  "Takes either :accounts or :transfers and checks for errors."
+  [type history]
+  (let [f (case type
+            :accounts  :create-accounts
+            :transfers :create-transfers)
+        writes-by-id (->> history
+                          (h/filter (h/has-f? f))
+                          writes-by-id)
+        dups (nil-if-empty (duplicates writes-by-id))]
+    {:duplicates dups}))
+
+(defrecord Checker []
+  checker/Checker
+  (check [this test history opts]
+    (let [accounts  (check-type :accounts  history)
+          transfers (check-type :transfers history)
+          ]
+      {:valid? (not (or (:duplicates accounts)
+                        (:duplicates transfers)))
+       :accounts  accounts
+       :transfers transfers})))
+
+(defn checker
+  "Constructs a new checker for idempotence histories.
+
+  Our main checker is predicated on the idea that we only attempt a write of a
+  given ID once. That won't fly here--we try writing IDs multiple times and
+  can't tell which one will win. It breaks our inference of which writes
+  succeeded: if we read ID 4, we don't know which of the three operations that
+  wrote 4 actually executed it.
+
+  Instead, we're just here to verify:
+
+  1. No duplicates. A write of an ID succeeds at most once.
+  2. No divergence. All reads of an ID are identical."
+  []
+  (Checker.))
+
 (defn workload
   "Takes CLI opts and constructs a partial test map."
   [opts]
@@ -138,4 +250,4 @@
    :generator       (repeater (gen opts))
    :final-generator (final-gen)
    :wrap-generator  wrap-gen
-   :checker         (tigerbeetle.checker/checker)})
+   :checker         (Checker.)})

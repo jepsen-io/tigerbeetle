@@ -117,13 +117,13 @@
   maps."
   []
   (assert (nil? downstream))
-  {:reducer-identity (comp b/linear bm/map)
+  {:reducer-identity  (comp b/linear bm/map)
    ; TODO: confirm all values are identical
-   :reducer          bm/merge
-   :post-reducer     identity
+   :reducer           bm/merge
+   :post-reducer      identity
    :combiner-identity (comp b/linear bm/map)
-   :combiner         bm/merge
-   :post-combiner    b/forked})
+   :combiner          bm/merge
+   :post-combiner     b/forked})
 
 (t/deftransform bsorted-map
   "Turns [k v] pairs into a Bifurcan sorted map."
