@@ -33,7 +33,7 @@
 
 ;; Tests
 
-(deftest ^:focus duplicate-test
+(deftest duplicate-test
   (let [h (h/history
             ; We insert two copies of the same account that succeed in the same op.
             [(o 0 0 :invoke :create-accounts [a1 a2 a1])
@@ -47,18 +47,43 @@
     ;(pprint r)
     (is (not (:valid? r)))
     (is (= {:valid? false
-            :accounts
-            {:duplicates [[(assoc a1
-                                  :index 0
-                                  :index' 1
-                                  :type :ok
-                                  :result :ok)
-                           (assoc a1
-                                  :index 0
-                                  :index' 1
-                                  :type :ok
-                                  :result :ok)]]}
-            :transfers
-            {:duplicates [[(assoc (t 10N a1 a2 1N) :index 2 :index' 3 :type :ok :result :ok)
-                           (assoc (t 10N a2 a1 2N) :index 4 :index' 5 :type :ok :result :ok)]]}}
+            :accounts {:duplicates [[a1 a1]]
+                       :divergences nil}
+            :transfers {:duplicates [[(t 10N a1 a2 1N)
+                                      (t 10N a2 a1 2N)]]
+                        :divergences nil}}
+           r))))
+
+(deftest divergence-test
+  (let [h (h/history
+            ; We insert account a1
+            [(o 0 0 :invoke :create-accounts [a1])
+             (o 1 0 :ok     :create-accounts [:ok])
+             ; However, we read a different copy of a1, and two distinct copies of a2 (out of nowhere)
+             (o 2 0 :invoke :lookup-accounts [1N 2N])
+             (o 3 0 :ok     :lookup-accounts [(assoc a1 :ledger 5) (assoc a2 :code 5)])
+             (o 4 0 :invoke :query-accounts  :whatever)
+             (o 5 0 :ok     :query-accounts  [(assoc a2 :code 6)])
+             ; We create a transfer from a1 to a2.
+             (o 6 0 :invoke :create-transfers [(t 10N a1 a2 1N)])
+             (o 7 0 :ok     :create-transfers [:ok])
+             ; And read a different version of transfer 10, and two versions of transfer 11.
+             (o 8 0 :invoke  :lookup-transfers [10N 11N])
+             (o 9 0 :ok      :lookup-transfers [(t 10N a2 a1 1N) (t 11N a1 a2 2N)])
+             (o 10 0 :invoke :query-transfers  :whatever)
+             (o 11 0 :ok     :query-transfers  [(t 11N a1 a2 3N)])])
+        r (checker/check (checker) nil h nil)]
+    ;(pprint r)
+    (is (not (:valid? r)))
+    (is (= {:valid? false
+            :accounts {:duplicates  nil
+                       :divergences [#{a1
+                                       (assoc a1 :ledger 5)}
+                                     #{(assoc a2 :code 5)
+                                       (assoc a2 :code 6)}]}
+            :transfers {:duplicates nil
+                        :divergences [#{(t 10N a1 a2 1N)
+                                        (t 10N a2 a1 1N)}
+                                      #{(t 11N a1 a2 2N)
+                                        (t 11N a1 a2 3N)}]}}
            r))))

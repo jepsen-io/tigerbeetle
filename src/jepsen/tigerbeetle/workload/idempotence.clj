@@ -2,16 +2,18 @@
   "A workload which only checks for idempotent writes. We work a lot like the
   general-purpose transfer workload, but intentionally repeat write operations,
   both with identical values and with random ones. The checker verifies that
-  writes for an ID never succeed twice, and that reads always observe a single
-  version of a given ID."
+  writes for an ID never succeed twice (a 'duplicate'), and that reads always
+  observe a single version of a given ID ('divergence')."
   (:require [bifurcan-clj [core :as b]
                           [map :as bm]
                           [list :as bl]
                           [set :as bs]]
+            [clojure [datafy :refer [datafy]]
+                     [pprint :refer [pprint]]]
             [clojure.core.match :refer [match]]
             [clojure.data.generators :as dg]
             [clojure.tools.logging :refer [info warn]]
-            [dom-top.core :refer [loopr]]
+            [dom-top.core :refer [letr loopr]]
             [jepsen [checker :as checker]
                     [generator :as gen]
                     [history :as h]
@@ -144,11 +146,15 @@
 
 ;; Checker
 
-
 (defn merge-cat
   "Merge Bifurcan maps with list concat"
   [m1 m2]
   (bm/merge m1 m2 bl/concat))
+
+(defn merge-union
+  "Merge Bifurcan maps with set union"
+  [m1 m2]
+  (bm/merge m1 m2 bs/union))
 
 (t/deftransform bmap-merge-cat
   "A Tesser transform that merges maps of lists with list concat."
@@ -161,16 +167,27 @@
    :combiner          merge-cat
    :post-combiner     b/forked})
 
+(t/deftransform bmap-merge-union
+  "A Tesser transform that merges maps of sets with union."
+  []
+  (assert (nil? downstream))
+  {:reducer-identity  (comp b/linear bm/map)
+   :reducer           merge-union
+   :post-reducer      identity
+   :combiner-identity (comp b/linear bm/map)
+   :combiner          merge-union
+   :post-combiner     b/forked})
+
 (defn writes-by-id
   "Takes a history and constructs a Bifurcan map of ID -> [w1, w2, ...], where
   each w is an event map (e.g. an Account or Transfer), augmented with the
-  following keys:
+  following metadata:
 
-  :index   The history index of the invocation of the write
-  :index'  The history index of the completion of the write
-  :type    The type of the completion--:ok, :info, or :fail
-  :result  The result keyword (e.g. :ok, :credits-must-not-exceed-debits,
-            ...), or nil if unknown."
+    :index   The history index of the invocation of the write
+    :index'  The history index of the completion of the write
+    :type    The type of the completion--:ok, :info, or :fail
+    :result  The result keyword (e.g. :ok, :credits-must-not-exceed-debits,
+              ...), or nil if unknown."
   [history]
   (h/ensure-pair-index history)
   (->> (t/filter h/invoke?)
@@ -182,11 +199,11 @@
                   (bireduce (fn per-event [writes event result]
                               (bm/put writes
                                       (:id event)
-                                      (bl/list (assoc event
-                                                      :index   index
-                                                      :index'  index'
-                                                      :type    type
-                                                      :result  result))
+                                      (bl/list (vary-meta event assoc
+                                                          :index   index
+                                                          :index'  index'
+                                                          :type    type
+                                                          :result  result))
                                       bl/concat))
                             (b/linear bm/empty)
                             (:value op)
@@ -194,15 +211,92 @@
        bmap-merge-cat
        (h/tesser history)))
 
+(defn immutable-part
+  "Projects a transfer or account map into its immutable part--e.g. without
+  :debits-pending etc."
+  [event]
+  ; Detect type
+  (if (contains? event :amount)
+    ; Transfers are all immutable
+    event
+    ; Accounts
+    (-> event
+        ; Drop four derived fields
+        (dissoc :credits-pending :credits-posted :debits-pending :debits-posted)
+        ; And the closed flag
+        (update :flags disj :closed))))
+
+(defn immutable-reads
+  "Takes an OK read. Extracts a Bifurcan map of IDs to Bifurcan sets of
+  immutable values."
+  [{:keys [value] :as op'}]
+  (let [index' (:index op')]
+    (loopr [reads (b/linear bm/empty)]
+           [event value]
+           (let [event (vary-meta (immutable-part event)
+                                  assoc :index' index')]
+             (recur (bm/put reads
+                            (:id event)
+                            (bs/add bs/empty event)
+                            bs/union))))))
+
+(defn reads-by-id
+  "Takes a history and constructs a Bifurcan map of ID -> #{r1, r2 ...} (a
+  Bifurcan Set), where each r is an event map (e.g. an Account or Transfer)
+  restricted to their purely immutable parts. Also adds a piece of metadata:
+
+    :index'  The history index of the completion of the write"
+  [history]
+  (h/ensure-pair-index history)
+  (->> (t/filter h/ok?)
+       (t/map immutable-reads)
+       bmap-merge-union
+       (h/tesser history)))
+
+(defn ok-write?
+  "Is this write (from writes-by-id) acknowledged as OK?"
+  [write]
+  (= :ok (:result (meta write))))
+
 (defn duplicates
   "Takes writes by ID, looks for duplicates. Returns a sequence of vectors,
   each vector with duplicate events."
   [writes-by-id]
   (keep (fn dups [writes]
-          (let [oks (vec (filter #(= :ok (:result %)) writes))]
+          (let [oks (vec (filter ok-write? writes))]
             (when (< 1 (count oks))
               oks)))
         (bm/values writes-by-id)))
+
+(defn divergences
+  "Takes writes by ID and reads by ID. Looks for divergences. Returns a
+  seqeunce of vectors, each vector with divergent events for a single ID."
+  [writes-by-id reads-by-id]
+  (keep (fn divs [pair]
+          (letr [id     (bm/key pair)
+                reads  (set (bm/value pair))
+
+                ; If there are no reads, we're done.
+                _ (when (= 0 (count reads))
+                    (return nil))
+
+                ; If we have multiple reads, we've got divergence
+                _ (when (< 1 (count reads))
+                    (return reads))
+
+                ; We have exactly one read. Let's make sure it aligns with
+                ; every write.
+                expected (dissoc (first reads) :timestamp)
+                writes (->> (bm/get writes-by-id id)
+                            (filter ok-write?)
+                            (map immutable-part)
+                            (remove #{expected}))]
+            (if (seq writes)
+              ; Some conflicting writes
+              (into reads writes)
+              ; Only one read, no conflicting writes
+              nil)))
+        reads-by-id))
 
 (defn check-type
   "Takes either :accounts or :transfers and checks for errors."
@@ -213,8 +307,16 @@
         writes-by-id (->> history
                           (h/filter (h/has-f? f))
                           writes-by-id)
-        dups (nil-if-empty (duplicates writes-by-id))]
-    {:duplicates dups}))
+        reads-by-id  (->> history
+                          (h/filter (h/has-f?
+                                      (case type
+                                        :accounts  read-account-fs
+                                        :transfers read-transfer-fs)))
+                          reads-by-id)
+        dups (nil-if-empty (duplicates writes-by-id))
+        divs (nil-if-empty (divergences writes-by-id reads-by-id))]
+    {:duplicates  dups
+     :divergences divs}))
 
 (defrecord Checker []
   checker/Checker
@@ -223,7 +325,9 @@
           transfers (check-type :transfers history)
           ]
       {:valid? (not (or (:duplicates accounts)
-                        (:duplicates transfers)))
+                        (:duplicates transfers)
+                        (:divergences accounts)
+                        (:divergences transfers)))
        :accounts  accounts
        :transfers transfers})))
 
