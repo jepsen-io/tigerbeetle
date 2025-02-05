@@ -303,10 +303,10 @@
                          [:ok :exists-with-different-flags])]
       (is (= {1N a1'} (datafy (:accounts model))))))
 
-  (testing "diff user-data-128"
+  (testing "diff user-data-64"
     (let [model (ca-step init0
                          [a1 (assoc a1 :user-data 2N)]
-                         [:ok :exists-with-different-user-data-128])]
+                         [:ok :exists-with-different-user-data-64])]
       (is (= {1N a1'} (datafy (:accounts model))))))
 
   (testing "diff user-ledger"
@@ -413,7 +413,7 @@
   (is (consistent?
         (-> init0
             (ca-step [a1 (assoc a1 :user-data 5)]
-                     [:ok :exists-with-different-user-data-128])))))
+                     [:ok :exists-with-different-user-data-64])))))
 
 (deftest create-account-exists-with-different-ledger-test
   (is (consistent?
@@ -856,7 +856,7 @@
                       :exists-with-different-debit-account-id
                       :exists-with-different-credit-account-id
                       :exists-with-different-amount
-                      :exists-with-different-user-data-128
+                      :exists-with-different-user-data-64
                       :exists-with-different-ledger
                       :exists-with-different-code
                       :exists])))))
