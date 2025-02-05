@@ -57,16 +57,16 @@
         enums (eval `(. ~enum-class values))]
     `(do
        (defn ~(symbol (str prefix "->keyword"))
-         [enum#]
+         [^Enum enum#]
          (case (.ordinal enum#)
-           ~@(mapcat (fn [enum]
+           ~@(mapcat (fn [^Enum enum]
                        [(.ordinal enum)
                         (->kebab-case-keyword (.name enum))])
                      enums)))
        (defn ~(symbol (str prefix "->enum"))
          [kw#]
          (case kw#
-           ~@(mapcat (fn [enum]
+           ~@(mapcat (fn [^Enum enum]
                        [(->kebab-case-keyword (.name enum))
                         (symbol
                           (str enum-class "/"
@@ -137,7 +137,7 @@
 
 (defn bigint->bytes
   "Turns a Clojure bigint into a byte array."
-  [x]
+  ^bytes [x]
   (assert (not (nil? x)) "Expected a bigint, but got nil")
   (UInt128/asBytes (biginteger x)))
 
@@ -161,7 +161,7 @@
                   flags
                   timestamp] :as account} accounts]
          (recur
-           (doto b
+           (doto ^AccountBatch b
              (.add)
              (.setId (bigint->bytes id))
              (.setUserData64 user-data)
@@ -174,7 +174,7 @@
 (defn transfer-batch
   "Constructs a new batch of transfers froma vector of maps."
   [transfers]
-  (loopr [b (TransferBatch. (count transfers))]
+  (loopr [^TransferBatch b (TransferBatch. (count transfers))]
          [{:keys [id
                   debit-account-id
                   credit-account-id
@@ -209,7 +209,7 @@
   (loopr [b (IdBatch. (count ids))]
          [id ids]
          (recur
-           (doto b
+           (doto ^IdBatch b
              (.add (UInt128/asBytes (biginteger id)))))))
 
 (defn account-filter
@@ -614,7 +614,7 @@
   due to a race between the synchronous call and the timeout task."
   [client, & body]
   (let [client (vary-meta client assoc :tag 'TimeoutClient)]
-    `(let [executor#  (.executor ~client)
+    `(let [executor#  ^ScheduledExecutorService (.executor ~client)
            timeout#   (.timeout ~client)
            ; tb-client# (.client ~client)
            ; A task to close the client on timeout. This has at least one race
@@ -624,7 +624,7 @@
            timeout-task# (fn ~'timeout-task [] (close! ~client))
            ; Schedule that timeout task
            executor-task# (.schedule executor#
-                                     timeout-task#
+                                     ^Runnable timeout-task#
                                      timeout#
                                      TimeUnit/MILLISECONDS)
            ; Make the synchronous call

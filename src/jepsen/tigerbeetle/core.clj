@@ -3,7 +3,7 @@
   (:require [clojure [set :as set]]
             [dom-top.core :refer [loopr]]))
 
-(def cluster-id
+(def ^Long cluster-id
   "The TigerBeetle cluster ID"
   0)
 

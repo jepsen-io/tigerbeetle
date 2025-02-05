@@ -103,7 +103,7 @@
                             v))
                         (throw (IllegalStateException.
                                  (str "Expected a value for key " k))))))]
-    (Maps/from ks to-v)))
+    (Maps/from ^ISet ks to-v)))
 
 ;; Lifecycle maps
 

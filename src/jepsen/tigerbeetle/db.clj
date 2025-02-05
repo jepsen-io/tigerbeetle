@@ -37,7 +37,7 @@
 (defn replica-index
   "The replica number for this node."
   [test node]
-  (.indexOf (:nodes test) node))
+  (.indexOf ^java.util.List (:nodes test) node))
 
 (defn install!
   "Installs the TigerBeetle package."

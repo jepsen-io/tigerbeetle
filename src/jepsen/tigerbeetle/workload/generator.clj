@@ -40,7 +40,8 @@
             [jepsen.tigerbeetle [core :refer [bireduce]]
                                 [lifecycle-map :as lm]]
             [potemkin :refer [definterface+]])
-  (:import (jepsen.tigerbeetle.lifecycle_map LifecycleMap)))
+  (:import (jepsen.tigerbeetle.lifecycle_map ILifecycleMap
+                                             LifecycleMap)))
 
 (defn rand-weighted-index
 	"Takes a total weight and a vector of weights for a weighted discrete
@@ -54,7 +55,7 @@
      (let [r (dg/long 0 total-weight)]
        (loop [i   0
               sum 0]
-         (let [sum' (+ sum (weights i))]
+         (let [sum' (+ sum ^long (weights i))]
            (if (< r sum')
              i
              (recur (inc i) sum'))))))))
@@ -88,20 +89,20 @@
 										i))))
 
 (defn long-weights
-	"Takes an array of rational weights and scales them up such that all are
- integers. Approximate for floats."
+  "Takes an array of rational weights and scales them up such that all are
+  integers. Approximate for floats."
 	[weights]
 	(let [denom (fn denominator+ [x]
 								(cond (integer? x) 1
 											(ratio? x) (denominator x)
-											(float? x) (Math/round (/ x))))
+											(float? x) (Math/round ^Double (/ x))))
 				m (->> weights
 							 (map denom)
 							 (reduce lcm 1))]
 		(mapv (fn scale [x]
 						(let [s (* m x)]
 							(cond (integer? s)  s
-										(float? s)    (Math/round s)
+										(float? s)    (Math/round ^Double s)
 										true          (throw (RuntimeException.
 																					 (str "How did we even get "
 																								(class s) "x" (pr-str s)))))))
@@ -679,8 +680,9 @@
                       (bm/update ledger->accounts
                                  (:ledger account)
                                  (fn add [accounts]
-                                   (lm/add-unlikely (or accounts lm/empty)
-                                                    account))))
+                                   (let [^LifecycleMap lm
+                                         (or accounts lm/empty)]
+                                     (lm/add-unlikely lm account)))))
                ledger->accounts
                new-accounts))))
 
@@ -791,10 +793,11 @@
                            (bm/update ledger->accounts
                                       (account-id->ledger id)
                                       (fn [accounts]
+                                        (let [^LifecycleMap lm
+                                              (or accounts lm/empty)]
                                         ; Each failed read has a 50% chance to
                                         ; knock this out of the likely pool.
-                                        (lm/is-unseen (or accounts lm/empty)
-                                                      0.5 id)))))
+                                        (lm/is-unseen lm 0.5 id))))))
                        (:ledger->accounts this')
                        ids
                        results))))

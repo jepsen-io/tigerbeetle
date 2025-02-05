@@ -770,7 +770,7 @@
   [test node history]
   (let [nodes (:nodes test)
         n (count nodes)
-        i (.indexOf nodes node)]
+        i (.indexOf ^java.util.List nodes node)]
     (h/filter (fn [op]
                 (or (not (h/client-op? op))
                     (= i (mod (:process op) n))))
