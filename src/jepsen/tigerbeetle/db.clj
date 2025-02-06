@@ -86,7 +86,10 @@
   []
   (c/su
     (try+
-      (let [log (c/exec :tail :-n 2 log-file)]
+      ; In normal builds, there's no stacktrace, and the message is in the last
+      ; 2 lines. But in debug builds, it might be 18 lines up! Hopefully nodes
+      ; log 20+ lines on healthy startup pretty quick.
+      (let [log (c/exec :tail :-n 20 log-file)]
         (boolean (some #(re-find % log)
                        corrupt-file-log-patterns)))
       (catch [:exit 1] _
