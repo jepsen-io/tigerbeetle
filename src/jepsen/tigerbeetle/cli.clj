@@ -150,9 +150,13 @@
 (defn tb-test
   "Takes CLI options and constructs a Jepsen test map"
   [opts]
-  (let [; Fill in defaults for nemesis-file-zones and nemesis-file-targets
-        opts            (merge (first standard-file-corruption-opts) opts)
-        workload-name   (:workload opts :transfer)
+  (let [; Fill in defaults for workload, nemesis-file-zones and
+        ; nemesis-file-targets. We leave these blank in the arg parser so that
+        ; we can do multiple choices in test-all.
+        opts            (merge (first standard-file-corruption-opts)
+                               {:workload :transfer}
+                               opts)
+        workload-name   (:workload opts)
         workload        ((workloads workload-name) opts)
         primary-tracker (client/primary-tracker)
         db              (db/db opts)
