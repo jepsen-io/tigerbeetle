@@ -152,7 +152,7 @@
   [opts]
   (let [; Fill in defaults for nemesis-file-zones and nemesis-file-targets
         opts            (merge (first standard-file-corruption-opts) opts)
-        workload-name   (:workload opts)
+        workload-name   (:workload opts :transfer)
         workload        ((workloads workload-name) opts)
         primary-tracker (client/primary-tracker)
         db              (db/db opts)
