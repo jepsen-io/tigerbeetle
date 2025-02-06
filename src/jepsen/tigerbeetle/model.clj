@@ -661,6 +661,11 @@
         (nil? credit-account)
         :credit-account-not-found
 
+        ; Same ledger
+        (not= (:ledger credit-account)
+              (:ledger debit-account))
+        :accounts-must-have-the-same-ledger
+
         ; You can't do anything except void a closed account.
         (and (not (:void-pending-transfer flags))
              (:closed (:flags debit-account)))
@@ -1140,9 +1145,6 @@
                  (return :timeout-reserved-for-pending-transfer))
 
            ; Same-value constraints
-           _ (when (not= (:ledger credit-account)
-                         (:ledger debit-account))
-               (return :accounts-must-have-the-same-ledger))
            _ (when (not= ledger (:ledger credit-account))
                (return :transfer-must-have-the-same-ledger-as-accounts))
 
