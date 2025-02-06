@@ -323,7 +323,7 @@
                       (gen/repeat {:type :info, :f :bitflip-file-chunks})
 
                       :copy-file-chunks
-                      (gen/repeat {:type :info, :f :bitflip-file-chunks})
+                      (gen/repeat {:type :info, :f :copy-file-chunks})
 
                       :snapshot-file-chunks
                       (gen/flip-flop
