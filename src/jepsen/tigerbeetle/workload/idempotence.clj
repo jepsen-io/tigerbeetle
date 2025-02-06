@@ -217,8 +217,11 @@
   [event]
   ; Detect type
   (if (contains? event :amount)
-    ; Transfers are all immutable
-    event
+    ; Transfers are all immutable, but we don't necessarily generate a :timeout
+    ; field for them.
+    (if (:timeout event)
+      event
+      (assoc event :timeout 0))
     ; Accounts
     (-> event
         ; Drop four derived fields
@@ -268,13 +271,43 @@
               oks)))
         (bm/values writes-by-id)))
 
+(defn c=
+  "Compatible equality between a written value and a read value. TigerBeetle
+  uses 0 to represent an absent value that will be filled in later, so we treat
+  0 or nil as compatible with everything."
+  [w r]
+  (cond (nil? w)                    true
+        (and (number? w) (zero? w)) true
+        true                        (= w r)))
+
+(defn write-compatible-with-read?
+  "Is a given write of a transfer or account compatible with a read? Note that
+  several fields are filled in after a write by TigerBeetle automatically. Also
+  note that balancing credits mean amounts may differ."
+  [w r]
+  (loopr []
+         [k (keys (merge w r))]
+         (case k
+           ; Amounts may differ due to balancing credits/debits/etc.
+           :amount
+           (if (or (zero? (:amount w))
+                   (<= (:amount r) (:amount w)))
+             (recur)
+             false)
+
+           ; All other keys
+           (if (c= (get w k) (get r k))
+             (recur)
+             false))
+         true))
+
 (defn divergences
   "Takes writes by ID and reads by ID. Looks for divergences. Returns a
   seqeunce of vectors, each vector with divergent events for a single ID."
   [writes-by-id reads-by-id]
   (keep (fn divs [pair]
           (letr [id     (bm/key pair)
-                reads  (set (bm/value pair))
+                reads  (vec (bm/value pair))
 
                 ; If there are no reads, we're done.
                 _ (when (= 0 (count reads))
@@ -286,14 +319,14 @@
 
                 ; We have exactly one read. Let's make sure it aligns with
                 ; every write.
-                expected (dissoc (first reads) :timestamp)
+                expected (first reads)
                 writes (->> (bm/get writes-by-id id)
                             (filter ok-write?)
                             (map immutable-part)
-                            (remove #{expected}))]
+                            (remove #(write-compatible-with-read? % expected)))]
             (if (seq writes)
               ; Some conflicting writes
-              (into reads writes)
+              (concat writes reads)
               ; Only one read, no conflicting writes
               nil)))
         reads-by-id))
@@ -313,8 +346,8 @@
                                         :accounts  read-account-fs
                                         :transfers read-transfer-fs)))
                           reads-by-id)
-        dups (nil-if-empty (duplicates writes-by-id))
-        divs (nil-if-empty (divergences writes-by-id reads-by-id))]
+        dups (nil-if-empty (take 8 (duplicates writes-by-id)))
+        divs (nil-if-empty (take 8 (divergences writes-by-id reads-by-id)))]
     {:duplicates  dups
      :divergences divs}))
 

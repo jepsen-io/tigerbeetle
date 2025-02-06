@@ -29,7 +29,8 @@
 
 (def standard-workloads
   "All the workloads we run by default."
-  [:transfer])
+  [:transfer
+   :idempotence])
 
 (def db-node-targets
   "Different ways we can target single nodes for database faults."
@@ -314,8 +315,6 @@
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword
-    :default  :transfer
-    :missing  (str "Must specify a workload: " (cli/one-of workloads))
     :validate [workloads (cli/one-of workloads)]]
    ])
 

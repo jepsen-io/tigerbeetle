@@ -33,6 +33,29 @@
 
 ;; Tests
 
+(deftest write-compatible-with-read?-test
+  (is (write-compatible-with-read?
+        {:amount 33,
+         :ledger 1,
+         :debit-account-id 15173N,
+         :credit-account-id 29130N,
+         :user-data 3,
+         :id 70406N,
+         :code 6,
+         :timeout 0,
+         :flags #{:balancing-credit}}
+        {:amount 0N,
+         :ledger 1,
+         :debit-account-id 15173N,
+         :pending-id 0N,
+         :credit-account-id 29130N,
+         :user-data 3,
+         :id 70406N,
+         :code 6,
+         :timeout 0,
+         :timestamp 1738187650464272022,
+         :flags #{:balancing-credit}})))
+
 (deftest duplicate-test
   (let [h (h/history
             ; We insert two copies of the same account that succeed in the same op.
@@ -77,13 +100,13 @@
     (is (not (:valid? r)))
     (is (= {:valid? false
             :accounts {:duplicates  nil
-                       :divergences [#{a1
-                                       (assoc a1 :ledger 5)}
-                                     #{(assoc a2 :code 5)
-                                       (assoc a2 :code 6)}]}
+                       :divergences [[a1
+                                      (assoc a1 :ledger 5)]
+                                     [(assoc a2 :code 6)
+                                      (assoc a2 :code 5)]]}
             :transfers {:duplicates nil
-                        :divergences [#{(t 10N a1 a2 1N)
-                                        (t 10N a2 a1 1N)}
-                                      #{(t 11N a1 a2 2N)
-                                        (t 11N a1 a2 3N)}]}}
+                        :divergences [[(t 10N a1 a2 1N)
+                                       (t 10N a2 a1 1N)]
+                                      [(t 11N a1 a2 2N)
+                                       (t 11N a1 a2 3N)]]}}
            r))))
