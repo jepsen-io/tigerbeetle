@@ -390,43 +390,54 @@
 (defn explain
   "Explains how a model checker error might have occurred.
 
-  Takes a map of options for model-check, an error map from model-check, and a
-  last valid read map. For some kinds of error map, tries to produce an
-  :explanation for why. Returns an explanation structure, or nil if no
-  explanation is required or possible."
-  [{:keys [history resolved-history transfer-id->timestamp model-check]
+  Takes a map of options for model-check, the immediately preceding model, an
+  error map from model-check, and a last valid read map. For some kinds of
+  error map, tries to produce an :explanation for why. Returns an explanation
+  structure, or nil if no explanation is required or possible."
+  [{:keys [history resolved-history transfer-id->timestamp]
     :as opts}
-   {:keys [op' id diff actual] :as err}
+   model
+   {:keys [op' id diff expected actual] :as err}
    last-valid-read]
+  (pprint err)
   (when err
     ; We have a model-checker error
-    (when (read-account-fs (:f op'))
-      ; Which got stuck on a read of an account
-      (when (map? (:actual diff))
-        ; And the diff is on a single account, rather than a vector
-        (when-let [field (first (set/intersection
-                                  (set (keys (:actual diff)))
-                                  #{:credits-posted
-                                    :debits-posted}))]
-          ; And it's an explicable field! Let's ask the explainer using either
-          ; the resolved or original history
-          (let [value (get actual field)
-                opts  (assoc opts
-                             :op'             op'
-                             :account-id      id
-                             :field           field
-                             :value           value
-                             :last-valid-read last-valid-read)]
-            (or (e/explain (assoc opts
-                                  :history resolved-history
-                                  :op-types #{:ok :info}
-                                  :additional-data {:history :resolved}))
-                (e/explain (assoc opts
-                                  :op-types #{:ok :info}
-                                  :additional-data {:history :original}))
-                (e/explain (assoc opts
-                                  :op-types #{:ok :info :fail}
-                                  :additional-data {:history :original})))))))))
+    (cond
+      (and ; Stuck on a read of an account
+           (read-account-fs (:f op'))
+           ; And the issue is a single account
+           (map? (:actual diff)))
+      (when-let [field (first (set/intersection
+                                (set (keys (:actual diff)))
+                                #{:credits-posted
+                                  :debits-posted}))]
+        ; And it's an explicable field! Let's ask the explainer using either
+        ; the resolved or original history
+        (let [value (get actual field)
+              opts  (assoc opts
+                           :op'             op'
+                           :account-id      id
+                           :field           field
+                           :value           value
+                           :last-valid-read last-valid-read)]
+          (or (e/explain (assoc opts
+                                :history resolved-history
+                                :op-types #{:ok :info}
+                                :additional-data {:history :resolved}))
+              (e/explain (assoc opts
+                                :op-types #{:ok :info}
+                                :additional-data {:history :original}))
+              (e/explain (assoc opts
+                                :op-types #{:ok :info :fail}
+                                :additional-data {:history :original})))))
+
+      ; Timestamp error
+      (or (re-find #"timestamp" (name expected))
+          (re-find #"timestamp" (name actual)))
+      {:previous-model
+       (select-keys model [:timestamp
+                           :account-timestamp
+                           :transfer-timestamp])})))
 
 (defn model-check
   "Checks a sequence of OK operations from a history using our model checker.
@@ -443,9 +454,9 @@
                                        :transfer-id->timestamp]))]
            [op' oks]
            (let [op     (h/invocation history op')
-                 model  (model/step model op op')]
-             (if (model/inconsistent? model)
-               (let [err (model/error-map model)
+                 model'  (model/step model op op')]
+             (if (model/inconsistent? model')
+               (let [err (model/error-map model')
                      ; If we had a bad read of a specific ID, try and trace it
                      ; to the last valid read.
                      id  (:id err)
@@ -459,7 +470,7 @@
                          (assoc opts :oks oks, :type type, :id id)))
 
                      ; Try to explain the error.
-                     explanation (explain opts err last-valid-read)
+                     explanation (explain opts model err last-valid-read)
                      err (cond-> err
                            explanation
                            (assoc :explanation explanation)
@@ -472,7 +483,7 @@
                                           :applied-indices
                                           :model)))]
                  {(:type err) (dissoc err :type)})
-               (recur model)))
+               (recur model')))
            ; OK
            nil)))
 

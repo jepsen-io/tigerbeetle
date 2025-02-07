@@ -633,7 +633,7 @@
       (cond (not (< 0 ts timestamp-upper-bound))
             :imported-event-timestamp-out-of-range
 
-            (< timestamp ts)
+            (and (< timestamp ts) (not= -1 timestamp))
             :imported-event-timestamp-must-not-advance
 
             (<= ts transfer-timestamp)
@@ -988,7 +988,7 @@
         (and import? (not (< 0 atimestamp timestamp-upper-bound)))
         :imported-event-timestamp-out-of-range
 
-        (and import? (< timestamp atimestamp))
+        (and import? (< timestamp atimestamp) (not= timestamp -1))
         :imported-event-timestamp-must-not-advance
 
         (and import? (<= atimestamp account-timestamp))
