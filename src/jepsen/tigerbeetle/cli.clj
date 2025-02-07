@@ -191,9 +191,13 @@
                            (gen/phases (gen/sleep (:initial-quiet-period opts))
                                        (:generator nemesis)))
                          (gen/time-limit (:time-limit opts)))
+                    ; Before we run the final nemesis generator (which recovers
+                    ; the cluster) we need to give TB processes a chance to
+                    ; finish crashing, if they're going to.
+                    (gen/sleep 5)
                     ; We always run the nemesis final generator; it makes
                     ; it easier to do ad-hoc analysis of a running cluster
-                    ; after the test
+                    ; after the test.
                     (gen/nemesis (:final-generator nemesis)))
         ; With final generator, if present
         generator (if-let [fg (:final-generator workload)]
@@ -253,6 +257,10 @@
     :default  300
     :parse-fn read-string
     :validate [#(and (number? %) (pos? %)) "must be a positive number"]]
+
+   [nil "--import-time-limit SECONDS" "Creates imported accounts/transfers until this many seconds into the test. Default 0 (no imported events)."
+    :parse-fn read-string
+    :validate [#(and (number? %) (not (neg? %))) "must be a non-negative number"]]
 
    [nil "--initial-quiet-period SECONDS" "How long to wait before beginning faults"
     :default 10

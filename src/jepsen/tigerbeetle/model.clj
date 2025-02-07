@@ -1126,15 +1126,15 @@
                                   errors import? id flags)
                                 (create-transfer-flags-error flags)
                                 (create-transfer-extant-error transfer extant)
-                                (create-transfer-timestamp-error
-                                  timestamp transfer-timestamp import?
-                                  credit-account debit-account transfer)
                                 (create-transfer-pending-error
                                   transfer pending-id pending)
                                 (create-transfer-*-account-id-error
                                   credit-account-id debit-account-id)
                                 (create-transfer-account-error
                                   flags debit-account credit-account)
+                                (create-transfer-timestamp-error
+                                  timestamp transfer-timestamp import?
+                                  credit-account debit-account transfer)
                                 (create-transfer-code-error code)
                                 )]
 

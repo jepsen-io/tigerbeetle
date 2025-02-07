@@ -58,7 +58,8 @@
   stale read could manifest as what looks like a more serious anomaly--say, a
   torn transaction violating model consistency. We may want to add more
   provable Elle dependencies to get better locality."
-  (:require [clojure [pprint :refer [pprint]]
+  (:require [clojure [datafy :refer [datafy]]
+                     [pprint :refer [pprint]]
                      [set :as set]]
             [clojure.core [match :refer [match]]]
             [clojure.tools.logging :refer [info warn]]
@@ -503,6 +504,10 @@
      :chain-lengths                 A quantile distribution of the lengths
                                     of chains across create-account and
                                     -transfer ops.
+     :account-flag-counts           A map of flags to number of seen accounts
+                                    with those flags.
+     :transfer-flag-counts          A map of flags to number of seen transfers
+                                    with those flags.
      }"
   [history]
   ; Ugh, hack around a race condition in sparse histories deadlocking on
@@ -572,6 +577,25 @@
              (tm/digest tq/hdr-histogram)
              (t/post-combine quantiles))
 
+        flag-count-fold
+        (fn flag-count-fold [fs]
+          (->> (t/filter (h/has-f? fs))
+               (t/map (fn ids->flags [op]
+                        ; Build a map of IDs to flags
+                        (loopr [m (b/linear bm/empty)]
+                               [event (:value op)]
+                               (recur (bm/put m (:id event) (:flags event))))))
+               bmap-merge
+               ; Turn id->flags into flag->count
+               (t/post-combine
+                 (fn map->counts [ids->flags]
+                   (loopr [m (b/linear bm/empty)]
+                          [flags (bm/values ids->flags)
+                           flag  flags]
+                          (recur (bm/update m flag (fnil inc 0)))
+                          (assoc (datafy m)
+                                 :total (b/size ids->flags)))))))
+
         ok-fold
         (->> (t/filter h/ok?)
              (t/fuse
@@ -583,7 +607,9 @@
                 :query-accounts-lengths        query-accounts-lengths
                 :query-transfers-lengths       query-transfers-lengths
                 :get-account-balances-lengths  get-account-balances-lengths
-                :get-account-transfers-lengths get-account-transfers-lengths}))
+                :get-account-transfers-lengths get-account-transfers-lengths
+                :account-flag-counts     (flag-count-fold read-account-fs)
+                :transfer-flag-counts    (flag-count-fold read-transfer-fs)}))
 
         chain-lengths
         (->> (t/filter (h/has-f? write-fs))

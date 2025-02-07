@@ -36,7 +36,8 @@
             [dom-top.core :refer [loopr reducer]]
             [jepsen [generator :as gen]
                     [history :as h]
-                    [util :as util :refer [zipf zipf-default-skew]]]
+                    [util :as util :refer [zipf zipf-default-skew
+                                           relative-time-nanos]]]
             [jepsen.tigerbeetle [core :refer [bireduce]]
                                 [lifecycle-map :as lm]]
             [potemkin :refer [definterface+]])
@@ -207,6 +208,17 @@
   []
   (bigint (inc (zipf 10))))
 
+(defn import-timestamp
+  "When we import, we need to generate sequential timestamps in the past. We
+  take advantage of the fact that we submit ID requests mostly in order to
+  generate timestamps in that order too."
+  [id]
+  (-> id
+      ; Some entropy, just for grins
+      (* 100)
+      (+ (rand 99))
+      long))
+
 (defn account-id->ledger
   "Returns the ledger for a specific account ID."
   [id]
@@ -327,6 +339,9 @@
                   "Generates a random timestamp likely to be within the range
                   of timestamps for the database.")
 
+  (import? [state]
+           "Are we importing currently?")
+
   (get-account [state id]
                "Look up our local cache of an account by ID.")
 
@@ -410,6 +425,8 @@
    ; An integer map of processes to the last invocation that process performed.
    ; Used to connect (e.g.) create-transfer requests to their results.
    process->invoke
+   ; Timestamp, in test-relative nanos, we emit imported events until.
+   ^long import-until
 	 ]
 
 	IState
@@ -467,6 +484,9 @@
 					true
 					(System/nanoTime)))
 
+  (import? [this]
+    (< (relative-time-nanos) import-until))
+
   (get-account [this id]
     (-> (bm/get ledger->accounts (account-id->ledger id) lm/empty)
         lm/possible
@@ -476,7 +496,8 @@
 		(let [ids (range next-id (+ next-id n))]
 			(->> ids
 					 (mapv (fn [id]
-                   (let [exceeds (dg/weighted
+                   (let [import? (import? this)
+                         exceeds (dg/weighted
                                    {#{} 128
                                     #{:debits-must-not-exceed-credits} 32
                                     #{:credits-must-not-exceed-debits} 32
@@ -484,16 +505,20 @@
                                       :credits-must-not-exceed-debits} 1})
                          flags (cond-> exceeds
                                  ; Half of accounts track balance histories
-                                 (< (dg/double) 1/2) (conj :history))]
+                                 (< (dg/double) 1/2) (conj :history)
+                                 ; Are we importing?
+                                 import? (conj :imported))]
 									 {:id        id
 										:ledger    (account-id->ledger id)
 										:code      (rand-code this)
 										:user-data (rand-user-data this)
-										:flags     flags})))
+										:flags     flags
+                    :timestamp (when import? (import-timestamp id))})))
 					 chains)))
 
 	(gen-new-transfer-1 [this id]
-		(let [debit-account-id  (rand-account-id this)
+		(let [import?           (import? this)
+          debit-account-id  (rand-account-id this)
           ; NB: The account ID we generate might be fake!
           debit-account     (get-account this debit-account-id)
 					ledger            (:ledger debit-account (rand-ledger this))
@@ -503,7 +528,6 @@
 																(if (and (pos? tries) (= id debit-account-id))
 																	(recur (dec tries))
 																	id)))
-          ; TODO: other flags
           pending? (< (dg/double) 1/2)
           closing? (< (dg/double) 1/16384)
 					flags (cond-> #{}
@@ -516,7 +540,10 @@
                   (conj :closing-credit)
                   ; Often we use balancing credits/debits
                   (< (dg/double) 1/3) (conj :balancing-credit)
-                  (< (dg/double) 1/3) (conj :balancing-debit))]
+                  (< (dg/double) 1/3) (conj :balancing-debit)
+                  ; Imports
+                  import? (conj :imported))]
+
 			{:id                id
 			 :debit-account-id  debit-account-id
 			 :credit-account-id credit-account-id
@@ -528,7 +555,8 @@
 			 :ledger            ledger
 			 :code              (rand-code this)
 			 :user-data         (rand-user-data this)
-			 :flags             flags}))
+			 :flags             flags
+       :timestamp         (when import? (import-timestamp id))}))
 
   (gen-new-transfer-2 [this id]
     (when-let [pending-id (zipf-nth zipf-default-skew pending-transfer-ids
@@ -539,7 +567,8 @@
                                ; often.
                                (when (< (dg/double) 0.05)
                                  (rand-transfer-id this)))]
-      (let [pending (or (bm/get (lm/possible transfers) pending-id nil)
+      (let [import? (import? this)
+            pending (or (bm/get (lm/possible transfers) pending-id nil)
                         ; Make up a transfer that doesn't exist
                         (gen-new-transfer-1 this (rand-transfer-id this)))
             ledger (if (< (dg/double) 1/256)
@@ -547,9 +576,10 @@
                      (:ledger pending))
             post? (< (dg/double) 1/2)
             void? (not post?)
-            flags #{(if post?
-                      :post-pending-transfer
-                      :void-pending-transfer)}]
+            flags (cond-> #{(if post?
+                              :post-pending-transfer
+                              :void-pending-transfer)}
+                    import? (conj :imported))]
         {:id                id
          :pending-id        (:id pending)
          :debit-account-id
@@ -581,7 +611,8 @@
                                   (< (dg/double) 1/2)   (:code pending)
                                   true                  0)
          :user-data         (rand-user-data this)
-         :flags             flags})))
+         :flags             flags
+         :timestamp         (when import? (import-timestamp id))})))
 
 	(gen-new-transfer [this id]
     ; Single-phase transfers are roughly half pending, so in a perfect world
@@ -853,17 +884,19 @@
     (update this :process->invoke bim/put (:process invoke) invoke)))
 
 (defn state
-	"A fresh state."
-	[]
-	(map->State
-		{:next-id                1N
-		 :timestamp-min          Long/MAX_VALUE
-		 :timestamp-max          Long/MIN_VALUE
-		 :transfers              (lm/lifecycle-map)
-		 :pending-transfer-ids   bs/empty
+  "A fresh state."
+  []
+  (map->State
+    {:next-id                1N
+     :timestamp-min          Long/MAX_VALUE
+     :timestamp-max          Long/MIN_VALUE
+     :transfers              (lm/lifecycle-map)
+     :pending-transfer-ids   bs/empty
      :completed-transfer-ids bs/empty
-		 :ledger->accounts       bm/empty
-     :process->invoke        (bim/int-map)}))
+     :ledger->accounts       bm/empty
+     :process->invoke        (bim/int-map)
+     :import-until           0 ; We fill this in lazily
+     }))
 
 ; A generator which maintains the state and ensures its wrapped generator has
 ; access to it via the context map.
@@ -944,12 +977,25 @@
           gen' (gen/update gen test ctx op)]
       (GenContext. gen' state))))
 
+; This generator constructs a fresh state, computing the import-until
+; timestamp, then becomes a GenContext.
+(defrecord GenContextInit [gen]
+  gen/Generator
+  (op [this test ctx]
+    (let [t (-> (:import-time-limit test 0)
+                util/secs->nanos
+                long)]
+      (info "Import until" t)
+      (gen/op (GenContext. gen (assoc (state) :import-until t))
+              test ctx)))
+
+  (update [this test ctx event]
+    (GenContextInit. (gen/update gen test ctx event))))
+
 (defn wrap-gen
 	"Wraps a generator in one that maintains our state."
 	[gen]
-	(map->GenContext
-		{:gen gen
-		 :state (state)}))
+  (GenContextInit. gen))
 
 (defn rand-event-count
 	"Generates a random number of events (e.g. for a single create-transfer op)"
