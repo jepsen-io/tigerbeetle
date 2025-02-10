@@ -431,8 +431,9 @@
                                 :additional-data {:history :original})))))
 
       ; Timestamp error
-      (or (re-find #"timestamp" (name expected))
-          (re-find #"timestamp" (name actual)))
+      (and (keyword? expected)
+           (or (re-find #"timestamp" (name expected))
+               (re-find #"timestamp" (name actual))))
       {:previous-model
        (select-keys model [:timestamp
                            :account-timestamp
