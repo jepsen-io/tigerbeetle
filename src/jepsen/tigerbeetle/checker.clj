@@ -454,6 +454,28 @@
           (list v)
           (cons v (model-steps- history model' (next oks))))))))
 
+(defn sorted-resolved-history
+  "For REPL experimentation: takes a history and returns the timestamp-sorted,
+  resolved OK operations we will apply during model checking."
+  [history]
+  (let [account-id->timestamp (h/task history account-id->timestamp []
+                                      (account-id->timestamp history))
+        transfer-id->timestamp (h/task history transfer-id->timestamp []
+                                      (transfer-id->timestamp history))
+        main-phase-max-timestamp (h/task history main-phase-max-timestamp []
+                                         (main-phase-max-timestamp history))
+
+        resolved-history
+        (h/task history resolve-ops
+                [ait account-id->timestamp
+                 tit transfer-id->timestamp
+                 mpmt main-phase-max-timestamp]
+                (resolve-ops {:history history
+                              :account-id->timestamp ait
+                              :transfer-id->timestamp tit
+                              :main-phase-max-timestamp mpmt}))]
+      (timestamp-sorted @resolved-history)))
+
 (defn model-steps
   "For REPL experimentation: takes a history and returns a lazy sequence of
   {:op, :op', :model'}, for each step through the resolved history. Model' is

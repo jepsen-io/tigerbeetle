@@ -127,6 +127,7 @@
   "Finds the [invocation completion] operation that created a given ID or
   account map or transfer map."
   [id-or-map history]
+  (h/ensure-pair-index history)
   (let [id (if (map? id-or-map)
              (:id id-or-map)
              id-or-map)]
