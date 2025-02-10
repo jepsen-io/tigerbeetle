@@ -984,13 +984,16 @@
   (op [this test ctx]
     (let [t (-> (:import-time-limit test 0)
                 util/secs->nanos
-                long)]
-      (info "Import until" t)
-      (gen/op (GenContext. gen (assoc (state) :import-until t))
-              test ctx)))
+                long)
+          gen (GenContext. gen (assoc (state) :import-until t))]
+      (gen/op gen test ctx)))
 
   (update [this test ctx event]
-    (GenContextInit. (gen/update gen test ctx event))))
+    (let [t (-> (:import-time-limit test 0)
+                util/secs->nanos
+                long)
+          gen (GenContext. gen (assoc (state) :import-until t))]
+      (gen/update gen test ctx event))))
 
 (defn wrap-gen
 	"Wraps a generator in one that maintains our state."
