@@ -513,7 +513,9 @@
 										:code      (rand-code this)
 										:user-data (rand-user-data this)
 										:flags     flags
-                    :timestamp (when import? (import-timestamp id))})))
+                    :timestamp (if import?
+                                 (import-timestamp id)
+                                 0)})))
 					 chains)))
 
 	(gen-new-transfer-1 [this id]
@@ -556,7 +558,9 @@
 			 :code              (rand-code this)
 			 :user-data         (rand-user-data this)
 			 :flags             flags
-       :timestamp         (when import? (import-timestamp id))}))
+       :timestamp         (if import?
+                            (import-timestamp id)
+                            0)}))
 
   (gen-new-transfer-2 [this id]
     (when-let [pending-id (zipf-nth zipf-default-skew pending-transfer-ids
@@ -612,7 +616,9 @@
                                   true                  0)
          :user-data         (rand-user-data this)
          :flags             flags
-         :timestamp         (when import? (import-timestamp id))})))
+         :timestamp         (if import?
+                              (import-timestamp id)
+                              0)})))
 
 	(gen-new-transfer [this id]
     ; Single-phase transfers are roughly half pending, so in a perfect world
