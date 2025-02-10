@@ -258,6 +258,9 @@
     :parse-fn read-string
     :validate [#(and (number? %) (pos? %)) "must be a positive number"]]
 
+   [nil "--import" "Simple flag which sets import-time-limit to 0.8x
+                   time-limit."]
+
    [nil "--import-time-limit SECONDS" "Creates imported accounts/transfers until this many seconds into the test. Default 0 (no imported events)."
     :parse-fn read-string
     :validate [#(and (number? %) (not (neg? %))) "must be a non-negative number"]]
@@ -330,6 +333,17 @@
     :validate [workloads (cli/one-of workloads)]]
    ])
 
+(defn opt-fn
+  "Options map post-processor"
+  [parsed]
+  (let [opts (:options parsed)
+        opts
+        (cond-> opts
+          (and (:import opts)
+               (not (:import-time-limit opts)))
+          (assoc :import-time-limit (* 0.8 (:time-limit opts))))]
+    (assoc parsed :options opts)))
+
 (defn all-tests
   "Turns CLI options into a sequence of tests."
   [opts]
@@ -360,8 +374,10 @@
   browsing results."
   [& args]
   (cli/run! (merge (cli/single-test-cmd {:test-fn  tb-test
+                                         :opt-fn opt-fn
                                          :opt-spec cli-opts})
                    (cli/test-all-cmd {:tests-fn all-tests
+                                      :opt-fn opt-fn
                                       :opt-spec cli-opts})
                    (cli/serve-cmd))
             args))
