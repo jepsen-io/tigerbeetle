@@ -658,17 +658,20 @@
       (when (not (= 0 ts))
         :timestamp-must-be-zero))))
 
-(defn create-transfer-account-error
-  "Errors involving the accounts of a transfer."
+(defn create-transfer-account-exists-error
+  "Errors when accounts don't exist"
   [flags debit-account credit-account]
   (cond ; Accounts must exist
         (nil? debit-account)
         :debit-account-not-found
 
         (nil? credit-account)
-        :credit-account-not-found
+        :credit-account-not-found))
 
-        ; Same ledger
+(defn create-transfer-account-error
+  "Errors involving the accounts of a transfer."
+  [flags debit-account credit-account]
+  (cond ; Same ledger
         (not= (:ledger credit-account)
               (:ledger debit-account))
         :accounts-must-have-the-same-ledger
@@ -1137,11 +1140,13 @@
                                   transfer pending-id pending)
                                 (create-transfer-*-account-id-error
                                   credit-account-id debit-account-id)
-                                (create-transfer-account-error
+                                (create-transfer-account-exists-error
                                   flags debit-account credit-account)
                                 (create-transfer-timestamp-error
                                   timestamp transfer-timestamp import?
                                   credit-account debit-account transfer)
+                                (create-transfer-account-error
+                                  flags debit-account credit-account)
                                 (create-transfer-code-error code)
                                 )]
 
