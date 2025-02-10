@@ -399,7 +399,6 @@
    model
    {:keys [op' id diff expected actual] :as err}
    last-valid-read]
-  (pprint err)
   (when err
     ; We have a model-checker error
     (cond
@@ -439,6 +438,50 @@
                            :account-timestamp
                            :transfer-timestamp])})))
 
+(defn model-steps-
+  "Lazy sequence helper for model-steps"
+  [history model oks]
+  (when (seq oks)
+    (lazy-seq
+      (let [op'     (first oks)
+            op      (h/invocation history op')
+            model'  (model/step model op op')
+            v       {:op     op
+                     :op'    op'
+                     :model' model'}]
+        (if (model/inconsistent? model')
+          (list v)
+          (cons v (model-steps- history model' (next oks))))))))
+
+(defn model-steps
+  "For REPL experimentation: takes a history and returns a lazy sequence of
+  {:op, :op', :model'}, for each step through the resolved history. Model' is
+  the state resulting from applying op & op'."
+  [history]
+  ; Duplicating the logic in `analysis` here
+  (let [account-id->timestamp (h/task history account-id->timestamp []
+                                      (account-id->timestamp history))
+        transfer-id->timestamp (h/task history transfer-id->timestamp []
+                                      (transfer-id->timestamp history))
+        main-phase-max-timestamp (h/task history main-phase-max-timestamp []
+                                         (main-phase-max-timestamp history))
+
+        resolved-history
+        (h/task history resolve-ops
+                [ait account-id->timestamp
+                 tit transfer-id->timestamp
+                 mpmt main-phase-max-timestamp]
+                (resolve-ops {:history history
+                              :account-id->timestamp ait
+                              :transfer-id->timestamp tit
+                              :main-phase-max-timestamp mpmt}))]
+    (model-steps-
+      history
+      (model/init
+        {:account-id->timestamp @account-id->timestamp
+         :transfer-id->timestamp @transfer-id->timestamp})
+      (timestamp-sorted @resolved-history))))
+
 (defn model-check
   "Checks a sequence of OK operations from a history using our model checker.
   Returns an error map, or nil if no errors were found."
@@ -453,7 +496,7 @@
                     (select-keys opts [:account-id->timestamp
                                        :transfer-id->timestamp]))]
            [op' oks]
-           (let [op     (h/invocation history op')
+           (let [op      (h/invocation history op')
                  model'  (model/step model op op')]
              (if (model/inconsistent? model')
                (let [err (model/error-map model')

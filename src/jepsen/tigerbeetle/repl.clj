@@ -10,8 +10,10 @@
                     [history :as h]
                     [store :as store]]
             [jepsen.generator.context :as ctx]
-            [jepsen.tigerbeetle [core :refer :all]
-                                [lifecycle-map :as lm]]
+            [jepsen.tigerbeetle [checker :as checker]
+                                [core :refer :all]
+                                [lifecycle-map :as lm]
+                                [model :as model]]
             [jepsen.tigerbeetle.workload [generator :as tgen]]
             [tesser.core :as t]))
 
@@ -179,3 +181,14 @@
                (gen/update gen test ctx op))
              (tgen/wrap-gen (tgen/gen test))
              history))))
+
+(def model-steps checker/model-steps)
+
+(defn debug-model-steps
+  "Like model-steps, but uses a compact debug representation for each model."
+  [history]
+  (map (fn [m]
+         (update m :model' model/debug))
+       (model-steps history)))
+
+(def model-debug model/debug)

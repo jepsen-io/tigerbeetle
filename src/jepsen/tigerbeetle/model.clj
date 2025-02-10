@@ -145,11 +145,18 @@
 (definterface+ IModel
   (step [this invoke ok]
         "Takes a model, an invoke op, and a corresponding OK op. Returns a new
-        model."))
+        model.")
+
+  (debug [this]
+         "A compact debugging representation of the model. Helpful for REPL
+         analysis."))
 
 (defrecord Inconsistent [op op' type op-count event-count]
   IModel
-  (step [this invoke ok] this))
+  (step [this invoke ok] this)
+
+  (debug [this]
+    (error-map this)))
 
 (def inconsistent
   "Represents inconsistent termination of a model."
@@ -1620,7 +1627,17 @@
         (assoc this'
                :op invoke
                :op' ok)
-        this'))))
+        this')))
+
+  (debug [this]
+    {:op-count           op-count
+     :event-count        event-count
+     :timestamp          timestamp
+     :account-timestamp  account-timestamp
+     :transfer-timestamp transfer-timestamp
+     :accounts  (into (sorted-map) (datafy accounts))
+     :transfers (into (sorted-map) (datafy transfers))}))
+
 
 (defn init
   "Constructs an initial model state. Takes two Bifurcan maps of account ID ->
