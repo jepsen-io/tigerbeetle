@@ -995,6 +995,10 @@
         (and (not import?) (not (zero? atimestamp)))
         :timestamp-must-be-zero
 
+        (and (:debits-must-not-exceed-credits flags)
+             (:credits-must-not-exceed-debits flags))
+        :flags-are-mutually-exclusive
+
         (and import? (not (< 0 atimestamp timestamp-upper-bound)))
         :imported-event-timestamp-out-of-range
 
@@ -1031,10 +1035,6 @@
 
           true
           :exists)
-
-        (and (:debits-must-not-exceed-credits flags)
-             (:credits-must-not-exceed-debits flags))
-        :flags-are-mutually-exclusive
 
         (when-let [p (:debits-pending account)] (not= 0 p))
         :debits-pending-must-be-zero
