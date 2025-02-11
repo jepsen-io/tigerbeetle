@@ -29,7 +29,7 @@
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [letr loopr]]
             [jepsen.history :as h]
-            [potemkin :refer [definterface+]])
+            [potemkin :refer [definterface+ def-derived-map]])
   (:import (java.util Arrays)
            (jepsen.history Op)
            (io.lacuna.bifurcan IMap)))
@@ -899,6 +899,8 @@
                 (recur i' (conj! results value))
                 (recur i' results)))))))
 
+(declare ->DebugTB)
+
 (defrecord TB
   [; A pair of maps of account/transfer ID to timestamp, derived from the
    ; observed history. We use these to advance time synthetically throughout
@@ -1635,14 +1637,16 @@
         this')))
 
   (debug [this]
-    {:op-count           op-count
-     :event-count        event-count
-     :timestamp          timestamp
-     :account-timestamp  account-timestamp
-     :transfer-timestamp transfer-timestamp
-     :accounts  (into (sorted-map) (datafy accounts))
-     :transfers (into (sorted-map) (datafy transfers))}))
+    (->DebugTB this)))
 
+(def-derived-map DebugTB [^TB m]
+  :op-count           (.op-count m)
+  :event-count        (.event-count m)
+  :timestamp          (.timestamp m)
+  :account-timestamp  (.account-timestamp m)
+  :transfer-timestamp (.transfer-timestamp m)
+  :accounts           (into (sorted-map) (datafy (.accounts m)))
+  :transfers          (into (sorted-map) (datafy (.transfers m))))
 
 (defn init
   "Constructs an initial model state. Takes two Bifurcan maps of account ID ->
