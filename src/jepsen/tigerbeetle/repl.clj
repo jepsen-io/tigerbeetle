@@ -39,7 +39,7 @@
                                       (recur (inc i)))
                                     nil)]
                            (when i
-                             [(update op :value nth i)
+                             [(update op  :value nth i)
                               (update op' :value nth i)]))
 
                      ; Look at results

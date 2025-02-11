@@ -343,3 +343,14 @@
         r (check h)]
     (pprint r)
     (is (:valid? r))))
+
+; When an acknowledged write goes missing, let's clearly call that out.
+(deftest lost-write-test
+  (let [h (h/history
+            [(o 0 0 :invoke :create-accounts [a1])
+             (o 1 0 :ok     :create-accounts [:ok] 10)
+             (o 2 0 :invoke :lookup-accounts [1N])
+             (o 3 0 :ok     :lookup-accounts [nil] 11)])
+        r (check h)]
+    ;(pprint r)
+    (is (= [1N] (:lost-accounts r)))))

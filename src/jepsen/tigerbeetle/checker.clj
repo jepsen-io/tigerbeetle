@@ -75,7 +75,8 @@
                   [txn]
                   [util :refer [nanos->secs]]]
             [jepsen [checker :as checker]
-                    [history :as h]]
+                    [history :as h]
+                    [util :refer [meh]]]
             [jepsen.checker.perf :as perf]
             [jepsen.tigerbeetle [core :refer [bireduce
                                               write-fs
@@ -794,6 +795,28 @@
         cycles (:anomalies (elle.txn/cycles! opts analyzer history))]
     (elle.txn/result-map opts cycles)))
 
+(defn check-lost-writes
+  "Looks for writes that were positively acknowledge but never appeared in any
+  read."
+  [history]
+  ; Ugh, another race condition here where lazy init of the index mapping can
+  ; fail due to threadpool starvation
+  (meh (h/get-index history 0))
+  (h/ensure-pair-index history)
+  (let [created-accounts (h/task history created-accounts []
+                               (created-accounts history))
+        created-transfers (h/task history created-transfers []
+                                  (created-transfers history))
+        seen-accounts (h/task history seen-accounts []
+                              (seen-accounts history))
+        seen-transfers (h/task history seen-transfers []
+                               (seen-transfers history))
+        lost-accounts  (bs/difference @created-accounts  @seen-accounts)
+        lost-transfers (bs/difference @created-transfers @seen-transfers)]
+    (cond-> {}
+      (seq lost-accounts)  (assoc :lost-accounts  (vec (sort lost-accounts)))
+      (seq lost-transfers) (assoc :lost-transfers (vec (sort lost-transfers))))))
+
 ;; Integrating various checks
 
 (defn analysis
@@ -825,12 +848,15 @@
                                (check-realtime {:history history}))
         check-duplicate-timestamps (h/task history duplicate-timestamps []
                                            (check-duplicate-timestamps history))
+        check-lost-writes (h/task history check-lost-writes []
+                                   (check-lost-writes history))
         stats (h/task history stats []
                       (stats history))
         ; Build error map
         errors (merge (sorted-map)
                       @model-check
                       (:anomalies @check-realtime)
+                      @check-lost-writes
                       @check-duplicate-timestamps)]
     (merge errors
            {:stats @stats}
