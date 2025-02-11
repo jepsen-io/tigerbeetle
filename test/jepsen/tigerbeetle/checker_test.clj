@@ -31,6 +31,16 @@
     :value     value
     :timestamp timestamp}))
 
+
+(defn ab
+  "Account with initial balances. Takes an account, adds four zero balance fields."
+  [a]
+  (assoc a
+         :credits-pending 0N
+         :credits-posted  0N
+         :debits-pending  0N
+         :debits-posted   0N))
+
 ;; Tests
 
 (deftest create-accounts-basic-test
@@ -294,3 +304,40 @@
              (o 7 2 :ok     :lookup-transfers
                 [(assoc (tts (t 10N a1 a2 5N)) :timestamp 110)] 120)])]
     (is (:valid? (check h)))))
+
+(deftest indefinite-import-timestamp-test
+  ; We have to be very careful when inferring timestamps for import writes,
+  ; because the import timestamps may not necessarily align with the actual
+  ; execution timestamps. In particular, it is possible to create:
+  ;
+  ; TB ts   Imported ts    Record
+  ; 100     10             Account a1
+  ; 200     20             Transfer t3
+  ;
+  ; But because the account returns :ok, and the transfer returns :info, we use
+  ; account ts 100 and transfer ts 20, incorrectly inferring that the transfer
+  ; executed *first*.
+  (let [a1  (assoc a1 :timestamp 10 :flags #{:imported})
+        a2  (assoc a2 :timestamp 20 :flags #{:imported})
+        a1' (ab a1)
+        a2' (ab a2)
+        t10 (assoc (t 10N a1 a2 5N) :timestamp 30, :flags #{:imported})
+        h (h/history
+            [; Create accounts
+             (o 0 0 :invoke :create-accounts [a1 a2])
+             (o 1 0 :ok     :create-accounts [:ok :ok] 100)
+             ; Now create a transfer
+             (o 2 0 :invoke :create-transfers [t10])
+             (o 3 0 :info   :create-transfers nil)
+             ; Which we go on to read
+             (o 10 0 :invoke :lookup-accounts  [1N 2N])
+             (o 11 0 :ok     :lookup-accounts  [a1' a2'] 1000)
+             (o 12 0 :invoke :lookup-transfers [10N])
+             (o 13 0 :ok     :lookup-transfers [t10] 1001)
+             ; To ensure we check consistency, do an extra write here to push
+             ; up the bounds of the model checker
+             (o 20 0 :invoke :create-accounts [a3])
+             (o 21 0 :ok     :create-accounts [:ok] 2000)])
+        r (check h)]
+    (pprint r)
+    (is (:valid? r))))

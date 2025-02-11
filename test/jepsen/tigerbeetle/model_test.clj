@@ -42,7 +42,8 @@
 
 ; Events with their timestamps
 (defn ats
-  "Account timestamp. Stamps an account with its timestamp from the timestamp map, as well as initial balances."
+  "Account timestamp. Stamps an account with its timestamp from the timestamp
+  map, as well as initial balances."
   [a]
   (assoc a
          :timestamp       (bm/get atsm (:id a))
