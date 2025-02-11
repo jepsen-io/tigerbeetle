@@ -206,16 +206,20 @@
                              (gen/phases
                                (gen/sleep (:initial-quiet-period opts))
                                (:generator nemesis)))
+                           ; Sleep before the final generator--if we run it too
+                           ; soon after the regular nemesis opts, we might get
+                           ; stuck in a race where the new TB process sees an
+                           ; old, crashing TB process and also kills itself.
+                           (gen/sleep 2)
                            ; We always run the nemesis final generator;
                            ; it makes it easier to do ad-hoc analysis of
                            ; a running cluster after the test.
-                           (gen/nemesis (:final-generator nemesis)))))
+                           (:final-generator nemesis))))
         ; With final generator, if present
         generator (if-let [fg (:final-generator workload)]
                     (gen/phases
                       generator
-                      (gen/log "Waiting for recovery")
-                      (gen/sleep 1)
+                      (gen/log "Beginning final reads")
                       (gen/time-limit (:final-time-limit opts)
                                       (gen/clients fg)))
                     generator)
