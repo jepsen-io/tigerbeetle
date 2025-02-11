@@ -1197,6 +1197,7 @@
   "Final generator. Makes sure we try to observe every unseen account and
   transfer."
   []
-  [;{:f :debug-gen}
-   (final-accounts-gen)
-   (final-transfers-gen)])
+  (gen/phases
+    [(final-accounts-gen)
+     (final-transfers-gen)]
+    {:f :final-reads-done}))

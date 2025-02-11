@@ -817,6 +817,17 @@
       (seq lost-accounts)  (assoc :lost-accounts  (vec (sort lost-accounts)))
       (seq lost-transfers) (assoc :lost-transfers (vec (sort lost-transfers))))))
 
+(defn check-final-reads-done
+  "If the final read phase did not complete, returns {:final-reads-incomplete
+  true}"
+  [history]
+  (if (->> (t/filter (h/has-f? #{:final-reads-done}))
+           (t/count)
+           (h/tesser history)
+           pos?)
+    {}
+    {:final-reads-incomplete? true}))
+
 ;; Integrating various checks
 
 (defn analysis
@@ -850,14 +861,17 @@
                                            (check-duplicate-timestamps history))
         check-lost-writes (h/task history check-lost-writes []
                                    (check-lost-writes history))
+        check-final-reads-done (h/task history check-final-reads-done []
+                                       (check-final-reads-done history))
         stats (h/task history stats []
                       (stats history))
         ; Build error map
         errors (merge (sorted-map)
                       @model-check
                       (:anomalies @check-realtime)
+                      @check-duplicate-timestamps
                       @check-lost-writes
-                      @check-duplicate-timestamps)]
+                      @check-final-reads-done)]
     (merge errors
            {:stats @stats}
            (select-keys @check-realtime [:not :also-not])
@@ -871,16 +885,20 @@
   "Checks a history, returning a map with statistics and errors."
   [history]
   (let [a           (analysis history)
-        error-types (:error-types a)
-        valid? (cond (seq (remove unknown-error-types error-types))
-                     false
+        error-types (:error-types a)]
+    (if (:final-reads-incomplete? a)
+      ; If we can't do final reads, all our safety inferences are hot garbage
+      (assoc (select-keys a [:stats :final-reads-incomplete?])
+             :valid? :unknown)
+      (let [valid? (cond (seq (remove unknown-error-types error-types))
+                         false
 
-                     (seq error-types)
-                     :unknown
+                         (seq error-types)
+                         :unknown
 
-                     true
-                     true)]
-    (assoc a :valid? valid?)))
+                         true
+                         true)]
+        (assoc a :valid? valid?)))))
 
 (defrecord Checker []
   checker/Checker

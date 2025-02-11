@@ -147,6 +147,14 @@
             res
             (assoc res :valid? true)))))))
 
+(defn stats-checker
+  "We don't care about having some operations that don't ever return OK."
+  []
+  (reify checker/Checker
+    (check [this test history opts]
+      (let [r (checker/check (checker/stats) test history opts)]
+        (assoc r :valid? true)))))
+
 (defn tb-test
   "Takes CLI options and constructs a Jepsen test map"
   [opts]
@@ -225,7 +233,7 @@
                         {:perf       (checker/perf)
                          :node-perf  (tc/node-perf-checker)
                          :clock      (checker/clock-plot)
-                         :stats      (checker/stats)
+                         :stats      (stats-checker)
                          :exceptions (checker/unhandled-exceptions)
                          :panic      (panic-checker)
                          :workload   (:checker workload)})
