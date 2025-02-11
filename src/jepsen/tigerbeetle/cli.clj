@@ -184,21 +184,24 @@
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload
-        generator (gen/phases
-                    (->> (:generator workload)
-                         (gen/stagger (/ (:rate opts)))
-                         (gen/nemesis
-                           (gen/phases (gen/sleep (:initial-quiet-period opts))
-                                       (:generator nemesis)))
-                         (gen/time-limit (:time-limit opts)))
-                    ; Before we run the final nemesis generator (which recovers
-                    ; the cluster) we need to give TB processes a chance to
-                    ; finish crashing, if they're going to.
-                    (gen/sleep 5)
-                    ; We always run the nemesis final generator; it makes
-                    ; it easier to do ad-hoc analysis of a running cluster
-                    ; after the test.
-                    (gen/nemesis (:final-generator nemesis)))
+        generator (->> (:generator workload)
+                       (gen/stagger (/ (:rate opts)))
+                       (gen/time-limit (:time-limit opts))
+                       (gen/nemesis
+                         (gen/phases
+                           ; Note that we time-limit the nemesis and clients
+                           ; separately, because TB clients might have very,
+                           ; very long timeouts, and we need to move on to
+                           ; ending the nemesis to let client ops recover.
+                           (gen/time-limit
+                             (:time-limit opts)
+                             (gen/phases
+                               (gen/sleep (:initial-quiet-period opts))
+                               (:generator nemesis)))
+                           ; We always run the nemesis final generator;
+                           ; it makes it easier to do ad-hoc analysis of
+                           ; a running cluster after the test.
+                           (gen/nemesis (:final-generator nemesis)))))
         ; With final generator, if present
         generator (if-let [fg (:final-generator workload)]
                     (gen/phases
@@ -337,11 +340,16 @@
   "Options map post-processor"
   [parsed]
   (let [opts (:options parsed)
-        opts
-        (cond-> opts
-          (and (:import opts)
-               (not (:import-time-limit opts)))
-          (assoc :import-time-limit (* 0.8 (:time-limit opts))))]
+        ; The import option provides a default import time limit.
+        opts (if (and (:import opts)
+                      (not (:import-time-limit opts)))
+               (assoc opts :import-time-limit (* 0.8 (:time-limit opts)))
+               opts)
+
+        ; If import-time-limit is set, we need to use infinite timeouts.
+        opts (if (pos? (:import-time-limit opts))
+               (assoc opts :timeout Long/MAX_VALUE)
+               opts)]
     (assoc parsed :options opts)))
 
 (defn all-tests
