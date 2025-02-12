@@ -345,7 +345,11 @@
    ["-v" "--versions VERSIONS" "The TigerBeetle version(s) to install,
                                comma-separated."
     :parse-fn #(str/split % #"\s*,\s*")
-    :default ["0.16.26"
+    :default ["0.16.20"
+              "0.16.21"
+              ; "0.16.23" Just to force a version jump
+              "0.16.25"
+              "0.16.26"
               "0.16.27"]]
 
    ["-w" "--workload NAME" "What workload should we run?"
