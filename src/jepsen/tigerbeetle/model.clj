@@ -1059,14 +1059,16 @@
         true
         ; OK, go! What timestamp did the actual system assign this account?
         (letr [ts      (if imported?
-                         (:timestamp account)
-                         (bm/get account-id->timestamp id))
+                         atimestamp
+                         (bm/get account-id->timestamp id 0))
                ; If we *don't* have a timestamp, it's very likely that this
                ; event is going to succeed now, but be rolled back due to a
                ; later failed event in the chain. We assign it a speculative
                ; timestamp and mark the transfer as :speculative?.
-               speculative? (nil? ts)
-               ts           (if speculative? (inc timestamp) ts)
+               speculative? (zero? ts)
+               ts           (if speculative?
+                              (inc (max timestamp account-timestamp))
+                              ts)
                account      (if speculative?
                               (assoc account :speculative? true)
                               account)
@@ -1229,13 +1231,22 @@
            {:keys [id amount flags]} transfer
            ts (if imported?
                 ts
-                (bm/get transfer-id->timestamp id))
+                (bm/get transfer-id->timestamp id 0))
            ; If we don't have a timestamp, it's very likely that this event
            ; succeeds now, but is rolled back due to a later failure in a
            ; chain. We assign it a speculative timestamp and mark the transfer
            ; as :speculative?.
-           speculative? (nil? ts)
-           ts           (if speculative? (inc timestamp) ts)
+           speculative? (zero? ts)
+           ;_  (when (= 1208471N (:id transfer))
+           ;     (prn :ts ts
+           ;          :imported? imported?
+           ;          :speculative? speculative?
+           ;          :timestamp timestamp
+           ;          :this-timestamp (:timestamp this)
+           ;          :transfer-timestamp transfer-timestamp))
+           ts           (if speculative?
+                          (inc (max timestamp transfer-timestamp))
+                          ts)
            transfer     (if speculative?
                           (assoc transfer :speculative? true)
                           transfer)
