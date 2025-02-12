@@ -374,6 +374,50 @@
               :stop   #{}
               :color  "#D2E9A0"}}}))
 
+(defrecord UpgradeNemesis []
+  n/Nemesis
+  (setup! [this test] this)
+
+  (invoke! [this test {:keys [f value] :as op}]
+    (case f
+      :upgrade
+      (assoc op :value (c/with-test-nodes test
+                         (db/install! value)))))
+
+  (teardown! [this test])
+
+  n/Reflection
+  (fs [this]
+    #{:upgrade}))
+
+(defn upgrade-package
+  "Package for upgrading nodes throughout a test. Uses the test's time-limit to
+  emit a sequence of upgrade nemesis operations, one for each version after the
+  first, spread throughout the test duration."
+  [{:keys [faults] :as opts}]
+  (let [; Generator expands once the test map is available
+        gen (reify gen/Generator
+              (op [_ test context]
+                (when-let [versions (next (:versions test))]
+                  (let [; Slice up the test's time limit into regions for each
+                        ; version, plus the current.
+                        dt (/ (:time-limit test) (inc (count versions)))
+                        gen (->> versions
+                                 (map (fn [version]
+                                        {:type :info, :f :upgrade, :value version}))
+                                 (gen/stagger dt))]
+                    (gen/op gen test context))))
+
+              (update [this test context event]
+                this))]
+    {:generator gen
+     :nemesis   (UpgradeNemesis.)
+     :perf      #{{:name "upgrade"
+                   :start #{}
+                   :stop #{}
+                   :fs #{:upgrade}
+                   :color "#B2B124"}}}))
+
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."
   [opts]
@@ -386,7 +430,8 @@
                [(large-clock-skew-package opts)
                 (corrupt-file-package opts)
                 (global-snapshot-package opts)
-                (file-corruption-package opts)]))
+                (file-corruption-package opts)
+                (upgrade-package opts)]))
 
         nsp (:stable-period opts)]
     ;(info :packages (map (comp n/fs :nemesis) packages))

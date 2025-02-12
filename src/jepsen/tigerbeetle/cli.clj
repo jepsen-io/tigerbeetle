@@ -120,7 +120,7 @@
   (str (if-let [z (:zip opts)]
          (let [[_ filename] (re-find #"([^/]+)$" z)]
            filename)
-         (:version opts))
+         (str/join "," (:versions opts)))
        " " (name (:workload opts))
        " c=" (name (:client-nodes opts))
        (when (some file-corruption-nemeses (:nemesis opts))
@@ -278,6 +278,7 @@
                    time-limit."]
 
    [nil "--import-time-limit SECONDS" "Creates imported accounts/transfers until this many seconds into the test. Default 0 (no imported events)."
+    :default 0
     :parse-fn read-string
     :validate [#(and (number? %) (not (neg? %))) "must be a non-negative number"]]
 
@@ -341,8 +342,11 @@
 
    [nil "--zip PATH" "Installs a local zip file, rather than downloading an official release."]
 
-   ["-v" "--version VERSION" "The TigerBeetle version to install."
-    :default "0.16.26"]
+   ["-v" "--versions VERSIONS" "The TigerBeetle version(s) to install,
+                               comma-separated."
+    :parse-fn #(str/split % #"\s*,\s*")
+    :default ["0.16.26"
+              "0.16.27"]]
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword

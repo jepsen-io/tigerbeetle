@@ -40,25 +40,27 @@
   (.indexOf ^java.util.List (:nodes test) node))
 
 (defn install!
-  "Installs the TigerBeetle package."
-  [test node]
+  "Installs the TigerBeetle package. Takes either a version string or a local
+  path ending in .zip."
+  [version]
   (c/su
-    (if-let [zip (:zip test)]
+    (if (re-find #"\.zip$" version)
       (let [tmp (cu/tmp-dir!)
             tmp-zip (str tmp "/tb.zip")]
         (try
-          (info "Installing TigerBeetle from local zip file" zip)
-          (c/upload zip tmp-zip)
+          (info "Installing TigerBeetle from local zip file" version)
+          (c/upload version tmp-zip)
           (str "file://" tmp-zip)
           (cu/install-archive! (str "file://" tmp-zip) bin)
           (finally
             (c/exec :rm :-rf tmp))))
       ; Install from web
       (let [url (str "https://github.com/tigerbeetle/tigerbeetle/releases/download/"
-                     (:version test)
+                     version
                      "/tigerbeetle-x86_64-linux.zip")]
         (info "Installing TigerBeetle from remote URL" url)
-        (cu/install-archive! url bin)))))
+        (cu/install-archive! url bin))))
+  version)
 
 (defn format!
   "Writes a fresh data file."
@@ -111,7 +113,6 @@
   [test node]
   (format! test node))
 
-
 (defn addresses
   "Computes the comma-separated address list for each node in the cluster."
   [test]
@@ -124,7 +125,7 @@
   db/DB
   (setup! [this test node]
     (when (:tcpdump test) (db/setup! tcpdump test node))
-    (install! test node)
+    (install! (or (:zip test) (first (:versions test))))
     (configure! test node)
     (db/start! this test node)
     )
