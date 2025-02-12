@@ -267,6 +267,8 @@
     :parse-fn parse-comma-kws
     :validate [(partial every? db-node-targets) (cli/one-of db-node-targets)]]
 
+   [nil "--debug" "Whether to download and install debug versions of versions. Ignored for zip files."]
+
    [nil "--download-data" "Whether to download data files from nodes."]
 
    [nil "--final-time-limit SECONDS" "How long should we run the final generator for, at most? In seconds."

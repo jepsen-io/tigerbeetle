@@ -42,7 +42,7 @@
 (defn install!
   "Installs the TigerBeetle package. Takes either a version string or a local
   path ending in .zip."
-  [version]
+  [test version]
   (c/su
     (if (re-find #"\.zip$" version)
       (let [tmp (cu/tmp-dir!)
@@ -57,7 +57,9 @@
       ; Install from web
       (let [url (str "https://github.com/tigerbeetle/tigerbeetle/releases/download/"
                      version
-                     "/tigerbeetle-x86_64-linux.zip")]
+                     "/tigerbeetle-x86_64-linux"
+                     (when (:debug test) "-debug")
+                     ".zip")]
         (info "Installing TigerBeetle from remote URL" url)
         (cu/install-archive! url bin))))
   version)
@@ -125,7 +127,7 @@
   db/DB
   (setup! [this test node]
     (when (:tcpdump test) (db/setup! tcpdump test node))
-    (install! (or (:zip test) (first (:versions test))))
+    (install! test (or (:zip test) (first (:versions test))))
     (configure! test node)
     (db/start! this test node)
     )

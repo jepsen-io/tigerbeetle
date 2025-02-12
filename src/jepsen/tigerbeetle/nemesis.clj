@@ -382,7 +382,7 @@
     (case f
       :upgrade
       (assoc op :value (c/with-test-nodes test
-                         (db/install! value)))))
+                         (db/install! test value)))))
 
   (teardown! [this test])
 
