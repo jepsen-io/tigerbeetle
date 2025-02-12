@@ -345,9 +345,11 @@
         ; To those faults, attach zones with :start, :stop, :chunk-size, etc
         gen (gen/map (add-zone-fn zones) gen)
         ; If we are performing anything other than a helical fault, we may
-        ; corrupt the superblock entirely, requiring a reformat.
+        ; corrupt the superblock entirely, requiring a reformat. Likewise,
+        ; total WAL loss might render a node unbootable.
         reformat? (and (not (#{:helix} targets))
-                       (some #{:superblock} zones))
+                       (some #{:superblock :wal :wal-prepares :wal-headers}
+                             zones))
         gen (if reformat?
               (gen/any gen
                        (gen/repeat {:type :info, :f :maybe-reformat}))
