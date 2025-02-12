@@ -86,7 +86,8 @@
   filesystem faults."
   [; Minority faults are survivable everywhere.
    {:nemesis-file-targets :minority
-    :nemesis-file-zones (keys nemesis/file-zones)}
+    ; WAL is a shorthand for the two WAL zones
+    :nemesis-file-zones (remove #{:wal} (keys nemesis/file-zones))}
    ; Helical faults will break TB if we do them in the WAL. Otherwise they're
    ; survivable.
    {:nemesis-file-targets :helix
