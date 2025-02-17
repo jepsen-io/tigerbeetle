@@ -162,18 +162,9 @@
   (let [; Fill in defaults for workload, nemesis-file-zones and
         ; nemesis-file-targets. We leave these blank in the arg parser so that
         ; we can do multiple choices in test-all.
-        opts (merge (first standard-file-corruption-opts)
-                    {:workload :transfer}
-                    opts)
-        ; The import option provides a default import time limit.
-        opts (if (and (:import opts)
-                      (not (:import-time-limit opts)))
-               (assoc opts :import-time-limit (* 0.8 (:time-limit opts)))
-               opts)
-        ; If import-time-limit is set, we need to use infinite timeouts.
-        opts (if (pos? (:import-time-limit opts))
-               (assoc opts :timeout Long/MAX_VALUE)
-               opts)]
+        opts            (merge (first standard-file-corruption-opts)
+                               {:workload :transfer}
+                               opts)
         workload-name   (:workload opts)
         workload        ((workloads workload-name) opts)
         primary-tracker (client/primary-tracker)
@@ -374,6 +365,22 @@
     :validate [workloads (cli/one-of workloads)]]
    ])
 
+(defn opt-fn
+  "Options map post-processor"
+  [parsed]
+  (let [opts (:options parsed)
+        ; The import option provides a default import time limit.
+        opts (if (and (:import opts)
+                      (not (:import-time-limit opts)))
+               (assoc opts :import-time-limit (* 0.8 (:time-limit opts)))
+               opts)
+
+        ; If import-time-limit is set, we need to use infinite timeouts.
+        opts (if (pos? (:import-time-limit opts))
+               (assoc opts :timeout Long/MAX_VALUE)
+               opts)]
+    (assoc parsed :options opts)))
+
 (defn all-tests
   "Turns CLI options into a sequence of tests."
   [opts]
@@ -404,8 +411,10 @@
   browsing results."
   [& args]
   (cli/run! (merge (cli/single-test-cmd {:test-fn  tb-test
+                                         :opt-fn opt-fn
                                          :opt-spec cli-opts})
                    (cli/test-all-cmd {:tests-fn all-tests
+                                      :opt-fn opt-fn
                                       :opt-spec cli-opts})
                    (cli/serve-cmd))
             args))
