@@ -6,9 +6,9 @@ Jepsen tests for the TigerBeetle distributed database.
 
 You'll need a [Jepsen environment](https://github.com/jepsen-io/jepsen?tab=readme-ov-file#setting-up-a-jepsen-environment).
 
-## Usage
+## Quickstart
 
-FIXME
+Use `lein run test-all` to run a relatively comprehensive battery of tests. `lein run test --help` will print out a full list of tuning parameters.
 
 ## License
 
