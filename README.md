@@ -28,6 +28,13 @@ harness tries to avoid this: by default, it causes only superblock, client
 replies, and grid corruption when using `--nemesis-file-targets helix`. You can
 explicitly override this with `--nemesis-file-zones wal`.
 
+Testing imports is a little weird--you have to be absolutely certain that every
+single write succeeds, and that the final read phase always completes. This is
+*mostly* possible, but there are some timing-sensitive deadlocks I haven't been
+able to fix, so it's not part of the regular `test-all` test suite. Use
+`--import` to test imported events, and watch for long stalls at the end of
+tests.
+
 ## Internal Tests
 
 There is an internal test suite which validates that the model, checker, and
