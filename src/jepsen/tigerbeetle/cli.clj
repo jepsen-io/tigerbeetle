@@ -253,7 +253,7 @@
 (def cli-opts
   "Command-line option specification"
   [[nil "--client-nodes MODE" "Whether to connect a client to one node or all nodes. `all` increases the number of operations that succeed, since TigerBeetle generally lets all requests time out on non-leader nodes. However, it might mean missing consistency violations that occur on specific nodes. It also breaks how we do primary node inference, so nemeses that target primaries will target (typically) all nodes instead."
-    :default :one
+    :default  :one
     :parse-fn keyword
     :validate [#{:one :all} "Must be one or all"]]
 
@@ -263,7 +263,7 @@
                "Must be an integer, optionally followed by n."]]
 
    [nil "--db-node-targets TARGETS" "A comma-separated list of ways to target DB nodes for faults, like 'one,majority'"
-    :default [:one :primaries :majority :all]
+    :default  [:one :primaries :majority :all]
     :parse-fn parse-comma-kws
     :validate [(partial every? db-node-targets) (cli/one-of db-node-targets)]]
 
@@ -280,12 +280,12 @@
                    time-limit."]
 
    [nil "--import-time-limit SECONDS" "Creates imported accounts/transfers until this many seconds into the test. Default 0 (no imported events)."
-    :default 0
+    :default  0
     :parse-fn read-string
     :validate [#(and (number? %) (not (neg? %))) "must be a non-negative number"]]
 
    [nil "--initial-quiet-period SECONDS" "How long to wait before beginning faults"
-    :default 10
+    :default  10
     :parse-fn read-string
     :validate [#(and (number? %) (pos? %)) "must be a positive number"]]
 
@@ -316,12 +316,12 @@
     :validate [pos? "Must be a positive number."]]
 
    ["-r" "--rate HZ" "Approximate request rate, in hz"
-    :default 10000
+    :default  10000
     :parse-fn read-string
     :validate [pos? "Must be a positive number."]]
 
    [nil "--fs FUNS" "A comma-separated list of API functions (e.g. query-transfers,create-accounts) that we should run."
-    :default all-fs
+    :default  all-fs
     :parse-fn (comp set parse-comma-kws)
     :validate [(partial every? all-fs) (cli/one-of all-fs)]]
 
@@ -331,12 +331,18 @@
     :validate [#(and (not (neg? %)) (rational? %)) "Must be a non-negative rational"]]
 
    [nil "--ta-ratio RATIO" "Ratio of create-transfers to create-accounts, e.g. 100/1"
-    :default 100
+    :default  100
     :parse-fn read-string
     :validate [#(and (not (neg? %)) (rational? %)) "Must be a non-negative rational."]]
 
+   [nil "--time-limit SECONDS"
+    "Excluding setup and teardown, how long should a test run for, in seconds?"
+    :default  600
+    :parse-fn #(Long/parseLong %)
+    :validate [pos? "Must be positive"]]
+
    [nil "--timeout MILLIS" "Client timeout, in milliseconds"
-    :default 5000
+    :default  5000
     :parse-fn parse-long
     :validate [pos? "Must be positive."]]
 
