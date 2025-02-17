@@ -48,10 +48,7 @@
     (let [h (h/history [])
           r (check h)]
       (is (= {:valid? :unknown
-              :not #{}
-              :also-not #{}
-              :error-types #{:empty-transaction-graph}
-              :empty-transaction-graph true}
+              :final-reads-incomplete? true}
              (dissoc r :stats)))))
 
   (testing "correct"
@@ -59,7 +56,9 @@
               [(o 0 0 :invoke :create-accounts [a1 a2])
                (o 1 0 :ok     :create-accounts [:ok :ok] 101)
                (o 2 1 :invoke :lookup-accounts [1N 2N])
-               (o 3 1 :ok     :lookup-accounts [a1' a2'] 200)])
+               (o 3 1 :ok     :lookup-accounts [a1' a2'] 200)
+               (o 1000 100 :invoke :final-reads-done nil)
+               (o 1001 100 :info   :final-reads-done nil)])
           r (check h)]
       (is (= {:valid? true
               :error-types #{}}
@@ -71,7 +70,9 @@
              ; Should be :ok, :ok
              (o 1 0 :ok     :create-accounts [:ok :ledger-must-not-be-zero] 101)
              (o 2 1 :invoke :lookup-accounts [1N 2N])
-             (o 3 1 :ok     :lookup-accounts [a1' a2'] 200)])
+             (o 3 1 :ok     :lookup-accounts [a1' a2'] 200)
+             (o 1000 100 :invoke :final-reads-done nil)
+             (o 1001 100 :info   :final-reads-done nil)])
         r (check h)]
     (is (= {:valid? false
             :error-types #{:model}
@@ -94,7 +95,9 @@
 
              ; Dummy write to finish main phase
              (o 100 100 :invoke :create-accounts [])
-             (o 101 100 :ok     :create-accounts [] 1000)])
+             (o 101 100 :ok     :create-accounts [] 1000)
+             (o 1000 100 :invoke :final-reads-done nil)
+             (o 1001 100 :info   :final-reads-done nil)])
         r (check h)]
     (is (= {:valid? false
             :error-types #{:model}
@@ -125,7 +128,9 @@
               [(o 0 0 :invoke :lookup-accounts [])
                (o 1 0 :ok     :lookup-accounts [] 101)
                (o 2 1 :invoke :lookup-transfers [])
-               (o 3 1 :ok     :lookup-transfers [] 100)])
+               (o 3 1 :ok     :lookup-transfers [] 100)
+               (o 1000 100 :invoke :final-reads-done nil)
+               (o 1001 100 :info   :final-reads-done nil)])
           r (check h)]
       (is (= {:valid? false
               :not #{:strong-read-uncommitted}
@@ -210,7 +215,9 @@
              (o 15 5 :ok     :lookup-accounts [(assoc a2' :credits-posted 17N)] 503)
              ; Dummy write to finish main phase
              (o 100 100 :invoke :create-accounts [])
-             (o 101 100 :ok     :create-accounts [] 1000)])
+             (o 101 100 :ok     :create-accounts [] 1000)
+             (o 1000 100 :invoke :final-reads-done nil)
+             (o 1001 100 :info   :final-reads-done nil)])
         r (check h)]
     (is (not (:valid? r)))
     ; We have a model error
@@ -257,7 +264,9 @@
 
              ; Dummy write to finish main phase
              (o 100 100 :invoke :create-accounts [])
-             (o 101 100 :ok     :create-accounts [] 1000)])
+             (o 101 100 :ok     :create-accounts [] 1000)
+             (o 1000 100 :invoke :final-reads-done nil)
+             (o 1001 100 :info   :final-reads-done nil)])
         r (check h)]
     (is (not (:valid? r)))
     ; We have a model error
@@ -302,8 +311,10 @@
              ; 101, 102, and 110. Now we read the transfer
              (o 6 2 :invoke :lookup-transfers [10N])
              (o 7 2 :ok     :lookup-transfers
-                [(assoc (tts (t 10N a1 a2 5N)) :timestamp 110)] 120)])]
-    (is (:valid? (check h)))))
+                [(assoc (tts (t 10N a1 a2 5N)) :timestamp 110)] 120)
+             (o 1000 100 :invoke :final-reads-done nil)
+             (o 1001 100 :info   :final-reads-done nil)])]
+    (is (true? (:valid? (check h))))))
 
 ; The more I think about this test, the less certain I am that there's any
 ; reasonable way to fix it. :-(
@@ -339,10 +350,11 @@
              ; To ensure we check consistency, do an extra write here to push
              ; up the bounds of the model checker
              (o 20 0 :invoke :create-accounts [a3])
-             (o 21 0 :ok     :create-accounts [:ok] 2000)])
+             (o 21 0 :ok     :create-accounts [:ok] 2000)
+             (o 1000 100 :invoke :final-reads-done nil)
+             (o 1001 100 :info   :final-reads-done nil)])
         r (check h)]
-    (pprint r)
-    (is (:valid? r))))
+    (is (true? (:valid? r)))))
 
 ; When an acknowledged write goes missing, let's clearly call that out.
 (deftest lost-write-test
@@ -350,7 +362,8 @@
             [(o 0 0 :invoke :create-accounts [a1])
              (o 1 0 :ok     :create-accounts [:ok] 10)
              (o 2 0 :invoke :lookup-accounts [1N])
-             (o 3 0 :ok     :lookup-accounts [nil] 11)])
+             (o 3 0 :ok     :lookup-accounts [nil] 11)
+             (o 1000 100 :invoke :final-reads-done nil)
+             (o 1001 100 :info   :final-reads-done nil)])
         r (check h)]
-    ;(pprint r)
     (is (= [1N] (:lost-accounts r)))))
