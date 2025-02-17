@@ -140,8 +140,8 @@
                    (when (some #(= id (:id %))
                                (:value op))
                      [op (h/completion history op)])))
-         ;(t/first)
-         (t/into [])
+         (t/first)
+         ;(t/into [])
          (h/tesser history))))
 
 (defn transfers-debiting
