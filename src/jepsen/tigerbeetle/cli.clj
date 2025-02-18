@@ -400,7 +400,15 @@
     (for [i     (range (:test-count opts))
           n     nemeses
           w     workloads
-          fcos  file-corruption-opts]
+          ; Uhghghghhghghg so many layers of complexity. So when we're doing a
+          ; snapshot file corruption fault, we *can't* target the superblock: it
+          ; causes the node to crash, because the WAL has entries ahead of the
+          ; superblock, with a generic "reached unreachable code" error.
+          fcos  (if (some #{:snapshot-file-chunks} n)
+                  (update file-corruption-opts
+                          :nemesis-file-zones
+                          (partial remove #{:superblock}))
+                  file-corruption-opts)]
       (tb-test (-> opts
                    (assoc :nemesis  n
                           :workload w)

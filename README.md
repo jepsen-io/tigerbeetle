@@ -18,10 +18,12 @@ load a specific test.
 ## Known Limitations
 
 TigerBeetle does not currently survive certain kinds of faults. For example,
-snapshot-and-restore disk faults (`--nemesis snapshot-file-chunks,kill`) can
-cause 0.16.27 to panic on every startup with a `reached unreachable code`,
-possible due to unexpected superblock rollback. The cluster as a whole can
-still run, so long as these faults are limited to a minority of nodes.
+snapshot-and-restore disk faults against the superblock (`--nemesis
+snapshot-file-chunks,kill`) can cause 0.16.27 to panic on every startup with a
+`reached unreachable code` error, thanks to the WAL containing valid entries
+which appear to be ahead of the superblock's timestamp. We avoid these faults
+in the default test-all suite, but you can explictly ask for it with `--nemesis
+snapshot-file-chunks,kill --nemesis-file-zones superblock,...`.
 
 Helical faults in the WAL can permanently disable a TB cluster. The test
 harness tries to avoid this: by default, it causes only superblock, client
