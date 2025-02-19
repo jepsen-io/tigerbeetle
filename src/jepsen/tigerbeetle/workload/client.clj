@@ -76,6 +76,7 @@
      :f    :query-transfers
      :value [transfer1 transfer2 ...]}"
   (:require [clojure.core.match :refer [match]]
+            [clojure.tools.logging :refer [info warn]]
             [jepsen [checker :as checker]
                     [client :as client]
                     [generator :as gen]
@@ -116,7 +117,11 @@
   (teardown! [this test])
 
   (close! [this test]
-    (c/close! conn)))
+    (c/close! conn))
+
+  client/Reusable
+  (reusable? [this test]
+    (not (:close-on-timeout? test))))
 
 (defn client
   "A basic client capable of handling the standard TigerBeetle API operations."

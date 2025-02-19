@@ -1,6 +1,7 @@
 (ns jepsen.tigerbeetle.cli
   "Command-line entry point for TigerBeetle tests"
-  (:require [clojure [string :as str]]
+  (:require [clojure [pprint :refer [pprint]]
+                     [string :as str]]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [checker :as checker]
                     [cli :as cli]
@@ -124,7 +125,9 @@
            filename)
          (str/join "," (:versions opts)))
        " " (name (:workload opts))
-       " c=" (name (:client-nodes opts))
+       " cn=" (name (:client-nodes opts))
+       (when (:close-on-timeout? opts)
+         " cot")
        (when (some file-corruption-nemeses (:nemesis opts))
          (str " t=" (name (:nemesis-file-targets opts))
               " z=" (->> (:nemesis-file-zones opts)
@@ -167,6 +170,12 @@
         opts            (merge (first standard-file-corruption-opts)
                                {:workload :transfer}
                                opts)
+        ; Close-on-timeout should always be a boolean--the default (nil) maps
+        ; to true. Same deal, the arg parser needs to leave this nil so that we
+        ; can distinguish presence vs absence at test-all time.
+        opts (if (nil? (:close-on-timeout? opts))
+               (assoc opts :close-on-timeout? true)
+               opts)
         workload-name   (:workload opts)
         workload        ((workloads workload-name) opts)
         primary-tracker (client/primary-tracker)
@@ -375,6 +384,7 @@
   "Options map post-processor"
   [parsed]
   (let [opts (:options parsed)
+
         ; The import option provides a default import time limit.
         opts (if (and (:import opts)
                       (not (:import-time-limit opts)))
@@ -392,6 +402,10 @@
   [opts]
   (let [nemeses   (if-let [n (:nemesis opts)]  [n] standard-nemeses)
         workloads (if-let [w (:workload opts)] [w] standard-workloads)
+        close-on-timeouts (let [c (:close-on-timeout? opts)]
+                            (if (nil? c)
+                              [true false]
+                              [c]))
         file-corruption-opts
         (if (or ; They requested a specific zone or target
                 (:nemesis-file-zones opts)
@@ -403,9 +417,11 @@
                               :nemesis-file-targets])]
           ; Use defaults
           standard-file-corruption-opts)]
+    (pprint (map :name
     (for [i     (range (:test-count opts))
           n     nemeses
           w     workloads
+          c     close-on-timeouts
           ; Uhghghghhghghg so many layers of complexity. So when we're doing a
           ; snapshot file corruption fault, we *can't* target the superblock: it
           ; causes the node to crash, because the WAL has entries ahead of the
@@ -419,8 +435,9 @@
                   file-corruption-opts)]
       (tb-test (-> opts
                    (assoc :nemesis  n
-                          :workload w)
-                   (merge fcos))))))
+                          :workload w
+                          :close-on-timeout? c)
+                   (merge fcos))))))))
 
 (defn -main
   "Handles command line arguments. Can either run a test, or a web server for
