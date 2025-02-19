@@ -15,6 +15,16 @@ Use `lein repl` to get a REPL shell with a bunch of useful utilities.
 introspecting it, or use `store/test` with a path or index (-1 means latest) to
 load a specific test.
 
+## Workloads
+
+The main workload is `transfer`, which tries to perform all the usual
+TigerBeetle operations, and measures their correctness against a singlethreaded
+model specification. The `idempotence` workload looks very similar, but tries
+to submit the same IDs multiple times, and measures whether a.) two creates
+succeed, and b.) you can read conflicting information for a single ID. The
+`indefinite` workload measures how often indefinite operations (e.g. timed-out
+operations) approximately succeed vs fail, as seen during the final read phase.
+
 ## Known Limitations
 
 TigerBeetle does not currently survive certain kinds of faults. For example,
