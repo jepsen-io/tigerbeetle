@@ -17,7 +17,8 @@
                                 [db :as db]
                                 [nemesis :as nemesis]]
             [jepsen.tigerbeetle.workload [transfer :as transfer]
-                                          [idempotence :as idempotence]]
+                                          [idempotence :as idempotence]
+                                          [indefinite :as indefinite]]
             [jepsen.os.debian :as debian]))
 
 (def workloads
@@ -25,7 +26,8 @@
   workload maps"
   {:none           (constantly tests/noop-test)
    :transfer       transfer/workload
-   :idempotence    idempotence/workload})
+   :idempotence    idempotence/workload
+   :indefinite     indefinite/workload})
 
 (def standard-workloads
   "All the workloads we run by default."
@@ -257,6 +259,10 @@
     :parse-fn keyword
     :validate [#{:one :all} "Must be one or all"]]
 
+   [nil "--[no-]close-on-timeout" "Controls whether or not we close the client
+                                  on encountering a timeout error."
+    :assoc-fn (fn [m k v] (assoc m :close-on-timeout? v))]
+
    [nil "--concurrency NUMBER" "How many workers should we run? Must be an integer, optionally followed by n (e.g. 3n) to multiply by the number of nodes."
     :default  "3n"
     :validate [(partial re-find #"^\d+n?$")
@@ -405,9 +411,11 @@
           ; causes the node to crash, because the WAL has entries ahead of the
           ; superblock, with a generic "reached unreachable code" error.
           fcos  (if (some #{:snapshot-file-chunks} n)
-                  (update file-corruption-opts
-                          :nemesis-file-zones
-                          (partial remove #{:superblock}))
+                  (map (fn [fco]
+                         (update fco
+                                 :nemesis-file-zones
+                                 (partial remove #{:superblock})))
+                       file-corruption-opts)
                   file-corruption-opts)]
       (tb-test (-> opts
                    (assoc :nemesis  n

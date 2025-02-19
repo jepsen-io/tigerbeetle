@@ -507,7 +507,7 @@
   {:timestamp (.getTimestamp (.getHeader response))
    :value     value})
 
-(defrecord TrackingClient [^Client client, node, primary-tracker, ^long timeout]
+(defrecord TrackingClient [^Client client, node, primary-tracker, ^long timeout, close-on-timeout?]
   IClient
   (create-accounts! [this accounts]
     (let [req (account-batch accounts)
@@ -556,12 +556,12 @@
   (deref+ [this fut]
     (let [res (deref fut timeout ::timeout)]
       (when (identical? res ::timeout)
-        (.close client)
+        (when close-on-timeout? (.close client))
         (throw+ {:type :timeout}))
       res))
 
   (close! [this]
-          (.close client))
+    (.close client))
 
   java.lang.AutoCloseable
   (close [this]
@@ -590,13 +590,19 @@
       (Client. (UInt128/asBytes cluster-id) (into-array addrs))))
 
 (defn open-tracking-client
-  "Opens a client to the given node."
+  "Opens a client to the given node. Takes a special test option,
+  :close-on-timeout?, which if false, leaves the client open when a request
+  times out."
   [test node]
   (TrackingClient.
     (open-tb-client test node)
     node
     (:primary-tracker test)
-    (:timeout test)))
+    (:timeout test)
+    (let [c (:close-on-timeout? test)]
+      (if (nil? c)
+        true
+        c))))
 
 (defmacro timeout-client-call
   "For the TimeoutClient, a helper macro for calling synchronous TB client
