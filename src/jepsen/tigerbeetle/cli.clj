@@ -405,39 +405,45 @@
         close-on-timeouts (let [c (:close-on-timeout? opts)]
                             (if (nil? c)
                               [true false]
-                              [c]))
-        file-corruption-opts
-        (if (or ; They requested a specific zone or target
-                (:nemesis-file-zones opts)
-                (:nemesis-file-targets opts)
-                ; Or the requested nemeses don't use them
-                (not-any? file-corruption-nemeses nemeses))
-          ; Use specified faults exactly
-          [(select-keys opts [:nemesis-file-zones
-                              :nemesis-file-targets])]
-          ; Use defaults
-          standard-file-corruption-opts)]
-    (pprint (map :name
+                              [c]))]
+    ;(pprint (map :name
     (for [i     (range (:test-count opts))
           n     nemeses
           w     workloads
           c     close-on-timeouts
-          ; Uhghghghhghghg so many layers of complexity. So when we're doing a
-          ; snapshot file corruption fault, we *can't* target the superblock: it
-          ; causes the node to crash, because the WAL has entries ahead of the
-          ; superblock, with a generic "reached unreachable code" error.
-          fcos  (if (some #{:snapshot-file-chunks} n)
-                  (map (fn [fco]
-                         (update fco
-                                 :nemesis-file-zones
-                                 (partial remove #{:superblock})))
-                       file-corruption-opts)
-                  file-corruption-opts)]
+          ; Uhghghghhghghg so many layers of complexity here. I'm so sorry. If
+          ; you want to start seeing test failures regularly (or if TB gets
+          ; better about handling file corruption) you can start pruning these
+          ; branches--I'm trying to get us to a place where tests only throw
+          ; failures we *don't* know about.
+          fcos (let [fcos (if (or ; They requested a specific zone or target
+                                  (:nemesis-file-zones opts)
+                                  (:nemesis-file-targets opts)
+                                  ; Or these nemeses don't do file corruption
+                                  (not-any? file-corruption-nemeses n))
+                            ; Use the specified faults only.
+                            [(select-keys opts [:nemesis-file-zones
+                                                :nemesis-file-targets])]
+                            ; Use the full set of defaults
+                            standard-file-corruption-opts)
+                     ; So when we're doing a snapshot file corruption fault, we
+                     ; *can't* target the superblock: it causes the node to
+                     ; crash, because the WAL has entries ahead of the
+                     ; superblock, with a generic "reached unreachable code"
+                     ; error.
+                     fcos (if (some #{:snapshot-file-chunks} n)
+                            (map (fn [fco]
+                                   (update fco
+                                           :nemesis-file-zones
+                                           (partial remove #{:superblock})))
+                                 fcos)
+                            fcos)]
+                 fcos)]
       (tb-test (-> opts
                    (assoc :nemesis  n
                           :workload w
                           :close-on-timeout? c)
-                   (merge fcos))))))))
+                   (merge fcos))))));))
 
 (defn -main
   "Handles command line arguments. Can either run a test, or a web server for
