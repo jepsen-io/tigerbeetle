@@ -373,7 +373,8 @@
               ; "0.16.23" Just to force a version jump
               "0.16.25"
               "0.16.26"
-              "0.16.27"]]
+              "0.16.27"
+              "0.16.28"]]
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword
