@@ -176,6 +176,10 @@
         opts (if (nil? (:close-on-timeout? opts))
                (assoc opts :close-on-timeout? true)
                opts)
+        ; Client nodes should default to one.
+        opts (if (nil? (:client-nodes opts))
+               (assoc opts :client-nodes :one)
+               opts)
         workload-name   (:workload opts)
         workload        ((workloads workload-name) opts)
         primary-tracker (client/primary-tracker)
@@ -263,8 +267,7 @@
 
 (def cli-opts
   "Command-line option specification"
-  [[nil "--client-nodes MODE" "Whether to connect a client to one node or all nodes. `all` increases the number of operations that succeed, since TigerBeetle generally lets all requests time out on non-leader nodes. However, it might mean missing consistency violations that occur on specific nodes. It also breaks how we do primary node inference, so nemeses that target primaries will target (typically) all nodes instead."
-    :default  :one
+  [[nil "--client-nodes MODE" "Whether to connect a client to one node or all nodes. The default, `one`, restricts each client to a single node. `all` increases the number of operations that succeed, since TigerBeetle generally lets all requests time out on non-leader nodes. However, it might mean missing consistency violations that occur on specific nodes. It also breaks how we do primary node inference, so nemeses that target primaries will target (typically) all nodes instead."
     :parse-fn keyword
     :validate [#{:one :all} "Must be one or all"]]
 
