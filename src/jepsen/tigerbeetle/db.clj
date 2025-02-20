@@ -127,7 +127,7 @@
   db/DB
   (setup! [this test node]
     (when (:tcpdump test) (db/setup! tcpdump test node))
-    (install! test (or (:zip test) (first (:versions test))))
+    (install! test (first (:versions test)))
     (configure! test node)
     (db/start! this test node)
     )

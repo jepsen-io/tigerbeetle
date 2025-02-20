@@ -120,10 +120,12 @@
 (defn test-name
   "Takes CLI options and constructs a test name as a string."
   [opts]
-  (str (if-let [z (:zip opts)]
-         (let [[_ filename] (re-find #"([^/]+)$" z)]
-           filename)
-         (str/join "," (:versions opts)))
+  (str (->> (:versions opts)
+            ; Turn paths like foo/bar.zip into bar.zip
+            (map (fn [v]
+                   (let [[_ filename] (re-find #"([^/]+)$" v)]
+                     filename)))
+            (str/join ","))
        " " (name (:workload opts))
        " cn=" (name (:client-nodes opts))
        (when (:close-on-timeout? opts)
@@ -365,8 +367,6 @@
     :validate [pos? "Must be positive."]]
 
    [nil "--tcpdump" "Dumps traffic to a pcap file."]
-
-   [nil "--zip PATH" "Installs a local zip file, rather than downloading an official release."]
 
    ["-v" "--versions VERSIONS" "The TigerBeetle version(s) to install,
                                comma-separated."
