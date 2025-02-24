@@ -150,7 +150,9 @@
               (remove (fn [match]
                         (some #(re-find % (:line match))
                               db/expected-file-log-patterns))
-                      (:matches res))]
+                      (:matches res))
+              ; This winds up being noisy if we don't filter them out
+              res (assoc res :matches interesting-matches)]
           (if (seq interesting-matches)
             res
             (assoc res :valid? true)))))))
