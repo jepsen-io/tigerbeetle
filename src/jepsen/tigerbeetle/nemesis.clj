@@ -269,12 +269,12 @@
                                    ; all.
                                    (double (/ 2 chunk-size)))
 
-                            ; If we're doing a restore, make it probabilistic.
-                            ; There's a few places (e.g. the WAL) where a
-                            ; rollback of the entire region will make TB flip
-                            ; from doing sensible repairs to "ack! everything
-                            ; is broken!" mode.
-                            (= :restore-file-chunks (:f op))
+                            ; If we're doing a copy or restore, make it
+                            ; probabilistic. There's a few places (e.g. the
+                            ; WAL) where corrupting the entire region will
+                            ; make TB flip from doing sensible repairs to "ack!
+                            ; everything is broken!" mode.
+                            (#{:copy-file-chunks :restore-file-chunks} (:f op))
                             (assoc :probability 0.2)))
                         (:value op))]
         (assoc op :value value')))
