@@ -267,7 +267,15 @@
                                    ; 2 flips per chunk ought to do it--we don't
                                    ; want to go too low, lest we do nothing at
                                    ; all.
-                                   (double (/ 2 chunk-size)))))
+                                   (double (/ 2 chunk-size)))
+
+                            ; If we're doing a restore, make it probabilistic.
+                            ; There's a few places (e.g. the WAL) where a
+                            ; rollback of the entire region will make TB flip
+                            ; from doing sensible repairs to "ack! everything
+                            ; is broken!" mode.
+                            (= :restore-file-chunks (:f op))
+                            (assoc :probability 0.2)))
                         (:value op))]
         (assoc op :value value')))
     identity))
