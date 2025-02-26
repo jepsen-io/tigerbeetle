@@ -100,15 +100,20 @@
       (catch [:exit 1] _
         false))))
 
+(defn reformat!
+  "Forcibly reformats the node."
+  [test node]
+  (c/su (c/exec :rm :-f data-file))
+  (format! test node)
+  :formatted)
+
 (defn maybe-reformat!
   "If we corrupt enough of a disk file, the node will crash on startup
   complaining of a corrupt data file. This function checks for that log message
   and, if found, formats a fresh data file."
   [test node]
   (when (corrupt-file?)
-    (c/su (c/exec :rm :-f data-file))
-    (format! test node)
-    :formatted))
+    (reformat! test node)))
 
 (defn configure!
   "Configures the node for operation."
@@ -145,14 +150,17 @@
 
   db/Pause
   (pause! [_ test node]
-    (c/su (cu/grepkill! :stop "tigerbeetle")))
+    (c/su (cu/grepkill! :stop "tigerbeetle"))
+    :paused)
 
   (resume! [_ test node]
-    (c/su (cu/grepkill! :cont "tigerbeetle")))
+    (c/su (cu/grepkill! :cont "tigerbeetle"))
+    :resumed)
 
   db/Kill
   (kill! [_ test node]
-    (c/su (cu/grepkill! :kill "tigerbeetle")))
+    (c/su (cu/grepkill! :kill "tigerbeetle"))
+    :killed)
 
   (start! [_ test node]
     (c/su

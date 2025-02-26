@@ -1,5 +1,6 @@
 (ns jepsen.tigerbeetle.cli
   "Command-line entry point for TigerBeetle tests"
+  (:gen-class)
   (:require [clojure [pprint :refer [pprint]]
                      [string :as str]]
             [clojure.tools.logging :refer [info warn]]
@@ -50,8 +51,8 @@
     :partition
     :clock
     :large-clock
-    :file-corruption
-    :global-snapshot
+    :global-snapshot ; Guaranteed to break
+    :reformat        ; You are not supposed to do this; just for stress testing
     :snapshot-file-chunks
     :bitflip-file-chunks
     :copy-file-chunks})
@@ -196,19 +197,10 @@
                          ;:partition     {:targets [:one ::majority]}
                          :pause         {:targets (:db-node-targets opts)}
                          :kill          {:targets (:db-node-targets opts)}
-                         :file-corruption
-                         {:targets (:db-node-targets opts)
-                          :corruptions [; Truncations up to 10 GB
-                                        {:type :truncate
-                                         :file db/data-file
-                                         :drop
-                                         {:distribution :zipf
-                                          :n (* 1024 1024 1024 10)}}]}
-                         ; Not to be confused with file-corruption <sigh>; this
-                         ; is the new file corrupter we added
                          :corrupt-file
                          {:zones   (:nemesis-file-zones opts)
                           :targets (:nemesis-file-targets opts)}
+                         ; Unused; TB seems so robust we don't seem to need it.
                          :stable-period (:nemesis-stable-period opts)
                          :interval      (:nemesis-interval opts)})
         ; Main workload

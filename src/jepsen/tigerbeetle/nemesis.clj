@@ -5,6 +5,7 @@
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [real-pmap]]
             [jepsen [control :as c]
+                    [db :as jdb]
                     [nemesis :as n]
                     [generator :as gen]
                     [net :as net]
@@ -90,12 +91,20 @@
             :value (:nodes test)})))}))
 
 ; TigerBeetle-specific file corruptions
-(defrecord FileCorruptionNemesis []
+(defrecord ReformatNemesis []
   n/Nemesis
   (setup! [this test] this)
 
   (invoke! [this test {:keys [f value] :as op}]
     (case f
+      ; Reformat nodes forcibly
+      :reformat
+      (assoc op :value (c/on-nodes test value
+                                   (fn [test node]
+                                     [(jdb/kill! (:db test) test node)
+                                      (db/reformat! test node)
+                                      (jdb/start! (:db test) test node)])))
+
       ; Reformat any nodes that look like they need it.
       :maybe-reformat
       (assoc op :value (c/on-nodes test (:nodes test) db/maybe-reformat!))))
@@ -105,58 +114,42 @@
 
   n/Reflection
   (fs [this]
-    [:maybe-reformat]))
+    [:reformat :maybe-reformat]))
 
-(defrecord FileCorruptionGenerator [gen targets safe-nodes]
+(defrecord ReformatGenerator []
   gen/Generator
   (op [this test ctx]
-    (if (nil? safe-nodes)
-      ; The first time we execute, we select a majority of nodes to remain safe
-      (let [nodes       (:nodes test)
-            m           (util/majority (count nodes))
-            safe-nodes  (set (take m (shuffle nodes)))]
-        (gen/op (assoc this :safe-nodes safe-nodes) test ctx))
-
-      ; We have a safe node.
-      (let [target (rand-nth targets)
-            nodes  (->> (nc/db-nodes test (:db test) target)
-                        (remove safe-nodes)
-                        vec)]
-        (if (empty? nodes)
-          ; Re-draw
-          (gen/op this test ctx)
-          ; Great, we have nodes. Ask the normal file corruption generator for
-          ; an op and replace its nodes with ours.
-          (when-let [[op gen'] (gen/op gen test ctx)]
-            (if (identical? :pending op)
-              [:pending this]
-              [(update op :value assoc 0 nodes)
-               (assoc this :gen gen')]))))))
+    (let [m (util/minority (count (:nodes test)))
+          nodes (vec (take m (shuffle (:nodes test))))
+          gen (fn gen []
+                {:type  :info
+                 :f     :reformat
+                 :value (util/random-nonempty-subset nodes)})]
+      (gen/op gen test ctx)))
 
   (update [this test ctx op]
-    (assoc this :gen (gen/update gen test ctx op))))
+    this))
 
-(defn file-corruption-package
-  "A generator of file corruption operations. For TigerBeetle, we want to
-  ensure in general that a majority of nodes are never corrupted. Otherwise,
-  this is basically like `nemesis.combined/file-corruption-package`."
+(defn reformat-package
+  "Supports reformatting nodes, either any which demand it, or a specific set
+  of nodes. The `maybe-reformat` operation supported by this nemesis is used by
+  the file corruption generators. The forcible `reformat` operation we generate
+  ourselves."
   [{:keys [db faults file-corruption interval] :as opts}]
-  ; Start with the stock file corruption package
-  (let [pkg (nc/file-corruption-package opts)
-        ; Then replace the generator
-        targets (:targets file-corruption (nc/node-specs db))
-        gen     (when-let [gen (:generator pkg)]
-                  (gen/any (->> {:type :info, :f :maybe-reformat}
-                                gen/repeat
-                                (gen/stagger interval))
-                           (FileCorruptionGenerator. gen targets nil)))]
-    (assoc pkg
-           :generator       gen
-           :final-generator (when gen
-                              [{:type :info, :f :maybe-reformat}
-                               {:type :info, :f :start, :value :all}])
-           :nemesis         (FileCorruptionNemesis.)
-           :perf            nil)))
+  (let [gen (when (:reformat faults)
+              (->> (ReformatGenerator.)
+                   (gen/stagger interval)))
+        final-gen (when gen
+                    [{:type :info, :f :maybe-reformat}
+                     {:type :info, :f :start}])]
+    {:generator gen
+     :final-generator final-gen
+     :nemesis (ReformatNemesis.)
+     :perf #{{:name   "reformat"
+              :fs     #{:maybe-reformat :reformat}
+              :start  #{}
+              :stop   #{}
+              :color  "#A2C713"}}}))
 
 ; Use `tigerbeetle inspect constants` to obtain these numbers.
 (def superblock-size
@@ -338,7 +331,8 @@
                         (gen/repeat
                           {:type :info, :f :snapshot-file-chunks})
                         (gen/repeat
-                          {:type :info, :f :restore-file-chunks}))})
+                          {:type :info, :f :restore-file-chunks}))
+                      })
                    gen/mix)
         ; Provide values which target specific nodes, indexes, and moduli
         gen (case targets
@@ -354,7 +348,8 @@
         gen (gen/map (add-zone-fn zones) gen)
         ; If we are performing anything other than a helical fault, we may
         ; corrupt the superblock entirely, requiring a reformat. Likewise,
-        ; total WAL loss might render a node unbootable.
+        ; total WAL loss might render a node unbootable. You can also request
+        ; reformmatting as a fault.
         reformat? (and (not (#{:helix} targets))
                        (some #{:superblock :wal :wal-prepares :wal-headers}
                              zones))
@@ -376,8 +371,7 @@
               :fs     #{:bitflip-file-chunks
                         :copy-file-chunks
                         :snapshot-file-chunks
-                        :restore-file-chunks
-                        :maybe-reformat}
+                        :restore-file-chunks}
               :start  #{}
               :stop   #{}
               :color  "#D2E9A0"}}}))
@@ -432,13 +426,13 @@
   (let [opts (update opts :faults set)
         packages
         (->> (concat
-               ; Standard packages, except we do file corruption ourselves.
-               (nc/nemesis-packages
-                 (update opts :faults disj :file-corruption))
+               ; Standard packages.
+               (nc/nemesis-packages opts)
+               ; Custom packages.
                [(large-clock-skew-package opts)
                 (corrupt-file-package opts)
                 (global-snapshot-package opts)
-                (file-corruption-package opts)
+                (reformat-package opts)
                 (upgrade-package opts)]))
 
         nsp (:stable-period opts)]
