@@ -188,21 +188,28 @@
         workload-name   (:workload opts)
         workload        ((workloads workload-name) opts)
         primary-tracker (client/primary-tracker)
-        db              (db/db opts)
-        os              debian/os
-        nemesis       (nemesis/package
-                        {:db            db
-                         :nodes         (:nodes opts)
-                         :faults        (:nemesis opts)
-                         ;:partition     {:targets [:one ::majority]}
-                         :pause         {:targets (:db-node-targets opts)}
-                         :kill          {:targets (:db-node-targets opts)}
-                         :corrupt-file
-                         {:zones   (:nemesis-file-zones opts)
-                          :targets (:nemesis-file-targets opts)}
-                         ; Unused; TB seems so robust we don't seem to need it.
-                         :stable-period (:nemesis-stable-period opts)
-                         :interval      (:nemesis-interval opts)})
+        db              (if (:antithesis opts)
+                          (:db tests/noop-test) ; No access to containers
+                          (db/db opts))
+        os              (if (:antithesis opts)
+                          (:os tests/noop-test) ; No access to containers
+                          debian/os)
+        nemesis       (if (:antithesis opts)
+                        (:nemesis tests/noop-test) ; No access to containers
+                        (nemesis/package
+                          {:db            db
+                           :nodes         (:nodes opts)
+                           :faults        (:nemesis opts)
+                           ;:partition     {:targets [:one ::majority]}
+                           :pause         {:targets (:db-node-targets opts)}
+                           :kill          {:targets (:db-node-targets opts)}
+                           :corrupt-file
+                           {:zones   (:nemesis-file-zones opts)
+                            :targets (:nemesis-file-targets opts)}
+                           ; Unused; TB seems so robust we don't seem to need
+                           ; it.
+                           :stable-period (:nemesis-stable-period opts)
+                           :interval      (:nemesis-interval opts)}))
         ; Main workload
         generator (->> (:generator workload)
                        (gen/stagger (/ (:rate opts)))
@@ -258,12 +265,16 @@
             :plot      {:nemeses (:perf nemesis)}
             :generator generator
             :logging   {:overrides logging-overrides}
-            :nonserializable-keys [:primary-tracker]
-            })))
+            :nonserializable-keys [:primary-tracker]}
+           (when (:antithesis opts)
+             ; SSH isn't available in Antithesis
+             {:ssh {:dummy? true}}))))
 
 (def cli-opts
   "Command-line option specification"
-  [[nil "--client-nodes MODE" "Whether to connect a client to one node or all nodes. The default, `one`, restricts each client to a single node. `all` increases the number of operations that succeed, since TigerBeetle generally lets all requests time out on non-leader nodes. However, it might mean missing consistency violations that occur on specific nodes. It also breaks how we do primary node inference, so nemeses that target primaries will target (typically) all nodes instead."
+  [["-a" "--antithesis" "Used to run the test in an Antithesis environment. In this mode, we open no SSH connections, perform no DB setup, and inject no faults."]
+
+   [nil "--client-nodes MODE" "Whether to connect a client to one node or all nodes. The default, `one`, restricts each client to a single node. `all` increases the number of operations that succeed, since TigerBeetle generally lets all requests time out on non-leader nodes. However, it might mean missing consistency violations that occur on specific nodes. It also breaks how we do primary node inference, so nemeses that target primaries will target (typically) all nodes instead."
     :parse-fn keyword
     :validate [#{:one :all} "Must be one or all"]]
 
