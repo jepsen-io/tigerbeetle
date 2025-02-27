@@ -31,6 +31,7 @@
                             TransferBatch
                             TransferFlags
                             UInt128)
+           (java.net InetAddress)
            (java.util.concurrent Executors
                                  ScheduledExecutorService
                                  ScheduledFuture
@@ -567,6 +568,12 @@
   (close [this]
     (close! this)))
 
+(defn ip
+  "Resolves a hostname to an IP, because you can't pass hostnames to the
+  client. Party like it's 1998!"
+  [node]
+  (.getHostAddress (InetAddress/getByName node)))
+
 (defn open-tb-client
   "Opens a raw TigerBeetle client given a test and node."
   [test node]
@@ -578,14 +585,14 @@
                 ; ports for all but the target node.
                 :one
                 (map (fn [some-node]
-                       (str (cn/ip some-node) ":" (if (= node some-node)
-                                                    port
-                                                    1)))
+                       (str (ip some-node) ":" (if (= node some-node)
+                                                 port
+                                                 1)))
                      (:nodes test))
 
                 :all
                 (map (fn [some-node]
-                       (str (cn/ip some-node) ":" port))
+                       (str (ip some-node) ":" port))
                      (:nodes test)))]
       (Client. (UInt128/asBytes cluster-id) (into-array addrs))))
 
