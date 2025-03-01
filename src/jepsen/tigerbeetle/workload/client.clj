@@ -81,7 +81,8 @@
                     [client :as client]
                     [generator :as gen]
                     [util :refer [timeout]]]
-            [jepsen.tigerbeetle [client :as c]
+            [jepsen.tigerbeetle [antithesis :as a]
+                                [client :as c]
                                 [checker :as tigerbeetle.checker]]
             [jepsen.tigerbeetle.workload [generator :refer [final-gen
                                                             gen
@@ -94,7 +95,9 @@
   (open! [this test node]
     (Client. (c/open test node)))
 
-  (setup! [this test])
+  (setup! [this test]
+    ; Let Antithesis know we're running
+    (a/started!))
 
   (invoke! [this test {:keys [f value] :as op}]
     (try+

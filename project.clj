@@ -6,6 +6,7 @@
   :dependencies [[camel-snake-kebab "0.4.3"]
                  [com.aphyr/bifurcan-clj "0.1.3-SNAPSHOT"]
                  [com.tigerbeetle/tigerbeetle-java "0.16.16"]
+                 [cheshire "5.13.0"]
                  [jepsen "0.3.8-SNAPSHOT"]
                  [org.clojure/clojure "1.12.0"]
                  [org.clojure/core.match "1.1.0"]

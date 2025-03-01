@@ -21,7 +21,8 @@
                     [history :as h]
                     [util :refer [timeout zipf zipf-default-skew
                                   nil-if-empty]]]
-            [jepsen.tigerbeetle [core :refer :all]
+            [jepsen.tigerbeetle [antithesis :as a]
+                                [core :refer :all]
                                 [checker :as tigerbeetle.checker]
                                 [client :as c]]
             [potemkin :refer [definterface+]]
@@ -36,7 +37,8 @@
     (Client. (c/open (assoc test :close-on-timeout? false)
                      node)))
 
-  (setup! [this test])
+  (setup! [this test]
+    (a/started!))
 
   (invoke! [this test {:keys [f value] :as op}]
     (try+
