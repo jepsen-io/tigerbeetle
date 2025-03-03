@@ -1,9 +1,11 @@
 (ns jepsen.tigerbeetle.antithesis
   "Support for running tests in Antithesis."
   (:require [cheshire.core :as json]
+            [clojure.data.generators :as data.generators]
             [clojure.java.io :as io]
             [clojure.tools.logging :refer [info]])
-  (:import (java.io Writer)))
+  (:import (java.io Writer)
+           (jepsen.tigerbeetle AntithesisRandom)))
 
 (let [d (delay (System/getenv "ANTITHESIS_OUTPUT_DIR"))]
   (defn dir
@@ -16,6 +18,11 @@
     []
     (when-let [d @d]
       (str d "/sdk.jsonl"))))
+
+(defn antithesis?
+  "Are we running in an Antithesis environment?"
+  []
+  (boolean (dir)))
 
 (defn log
   "Logs a message (e.g. {:antithesis_setup ...} as JSON to the SDK log file."
@@ -38,3 +45,12 @@
       (log {:antithesis_setup {:status "complete"
                                :details nil}})
       (reset! started? true))))
+
+(defmacro with-random
+  "Replaces data.generators' random with an Antithesis-controlled source of
+  entropy, when running in Antithesis."
+  [& body]
+  `(binding [data.generators/*rnd* (if (antithesis?)
+                                     (AntithesisRandom.)
+                                     data.generators/*rnd*)]
+     ~@body))

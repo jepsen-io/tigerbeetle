@@ -13,7 +13,8 @@
                     [tests :as tests]
                     [util :as util]]
             [jepsen.control.scp :as scp]
-            [jepsen.tigerbeetle [client :as client]
+            [jepsen.tigerbeetle [antithesis :as antithesis]
+                                [client :as client]
                                 [checker :as tc]
                                 [core :refer [all-fs]]
                                 [db :as db]
@@ -458,11 +459,12 @@
   "Handles command line arguments. Can either run a test, or a web server for
   browsing results."
   [& args]
-  (cli/run! (merge (cli/single-test-cmd {:test-fn  tb-test
-                                         :opt-fn opt-fn
-                                         :opt-spec cli-opts})
-                   (cli/test-all-cmd {:tests-fn all-tests
-                                      :opt-fn opt-fn
-                                      :opt-spec cli-opts})
-                   (cli/serve-cmd))
-            args))
+  (antithesis/with-random
+    (cli/run! (merge (cli/single-test-cmd {:test-fn  tb-test
+                                           :opt-fn opt-fn
+                                           :opt-spec cli-opts})
+                     (cli/test-all-cmd {:tests-fn all-tests
+                                        :opt-fn opt-fn
+                                        :opt-spec cli-opts})
+                     (cli/serve-cmd))
+              args)))

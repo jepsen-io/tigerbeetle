@@ -4,9 +4,10 @@
   :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
             :url "https://www.eclipse.org/legal/epl-2.0/"}
   :dependencies [[camel-snake-kebab "0.4.3"]
-                 [com.aphyr/bifurcan-clj "0.1.3-SNAPSHOT"]
-                 [com.tigerbeetle/tigerbeetle-java "0.16.16"]
                  [cheshire "5.13.0"]
+                 [com.aphyr/bifurcan-clj "0.1.3-SNAPSHOT"]
+                 [com.antithesis/sdk "1.4.2"]
+                 [com.tigerbeetle/tigerbeetle-java "0.16.16"]
                  [jepsen "0.3.8-SNAPSHOT"]
                  [org.clojure/clojure "1.12.0"]
                  [org.clojure/core.match "1.1.0"]
