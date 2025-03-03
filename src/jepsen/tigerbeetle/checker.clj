@@ -78,7 +78,8 @@
                     [history :as h]
                     [util :refer [meh]]]
             [jepsen.checker.perf :as perf]
-            [jepsen.tigerbeetle [core :refer [bireduce
+            [jepsen.tigerbeetle [antithesis :as a]
+                                [core :refer [bireduce
                                               write-fs
                                               read-fs
                                               read-account-fs
@@ -898,6 +899,7 @@
 
                          true
                          true)]
+        (a/assert-always (true? valid?) "checker valid" a)
         (assoc a :valid? valid?)))))
 
 (defrecord Checker []

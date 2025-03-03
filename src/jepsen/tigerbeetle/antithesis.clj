@@ -1,10 +1,15 @@
 (ns jepsen.tigerbeetle.antithesis
   "Support for running tests in Antithesis."
   (:require [cheshire.core :as json]
+            [clojure [pprint :refer [pprint]]]
             [clojure.data.generators :as data.generators]
             [clojure.java.io :as io]
             [clojure.tools.logging :refer [info]])
-  (:import (java.io Writer)
+  (:import (com.antithesis.sdk Assert)
+           (com.fasterxml.jackson.databind ObjectMapper)
+           (com.fasterxml.jackson.databind.node ArrayNode
+                                                ObjectNode)
+           (java.io Writer)
            (jepsen.tigerbeetle AntithesisRandom)))
 
 (let [d (delay (System/getenv "ANTITHESIS_OUTPUT_DIR"))]
@@ -54,3 +59,65 @@
                                      (AntithesisRandom.)
                                      data.generators/*rnd*)]
      ~@body))
+
+(def ^ObjectMapper om (ObjectMapper.))
+
+(defprotocol ToJsonNode
+  (->json-node [x] "Coerces x to a Jackson JsonNode."))
+
+(extend-protocol ToJsonNode
+  clojure.lang.IPersistentMap
+  (->json-node [x]
+    (reduce (fn [^ObjectNode n, [k v]]
+              ; my kingdom for a JSON with non-string keys
+              (.put n
+                    (if (instance? clojure.lang.Named k)
+                      (name k)
+                      (str k))
+                    (->json-node v))
+              n)
+            (.createObjectNode om)
+            x))
+
+  clojure.lang.IPersistentSet
+  (->json-node [x]
+    (reduce (fn [^ArrayNode a, e]
+              (.add a e))
+            (.createArrayNode om)
+            x))
+
+  clojure.lang.Sequential
+  (->json-node [x]
+    (reduce (fn [^ArrayNode a, e]
+              (.add a (->json-node e)))
+            (.createArrayNode om)
+            x))
+
+  clojure.lang.Keyword
+  (->json-node [x]
+    (name x))
+
+  java.lang.Number
+  (->json-node [x] x)
+
+  java.lang.String
+  (->json-node [x] x)
+
+  java.lang.Boolean
+  (->json-node [x] x))
+
+(defn assert-always
+  "Asserts that expr is true every time, and that it's called at least once.
+  Takes a map of data which is serialized to JSON."
+  [expr message data]
+  (assert (or (nil? data) (map? data)))
+  (println "data")
+  (pprint data)
+  (let [data' (->json-node data)]
+    (println "as json")
+    (pprint data'))
+  (Assert/always (boolean expr)
+                 message
+                 ^ObjectNode (when data
+                               (->json-node data)
+                               (.createObjectNode om))))

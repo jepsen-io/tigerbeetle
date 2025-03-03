@@ -623,7 +623,6 @@
 	(gen-new-transfer [this id]
     ; Single-phase transfers are roughly half pending, so in a perfect world
     ; we'd do second-phase transfers roughly 1/3 of the time.
-    (warn "gen-new-transfer rnd is" dg/*rnd*)
 		(if (< (dg/double) 2/3)
 			(gen-new-transfer-1 this id)
 			(or (gen-new-transfer-2 this id)

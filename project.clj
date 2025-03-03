@@ -6,14 +6,16 @@
   :dependencies [[camel-snake-kebab "0.4.3"]
                  [cheshire "5.13.0"]
                  [com.aphyr/bifurcan-clj "0.1.3-SNAPSHOT"]
-                 [com.antithesis/sdk "1.4.2"]
+                 [com.antithesis/sdk "1.4.2"
+                  :exclusions [com.fasterxml.jackson.core/jackson-databind
+                               com.fasterxml.jackson.core/jackson-annotations]]
                  [com.tigerbeetle/tigerbeetle-java "0.16.16"]
                  [jepsen "0.3.8-SNAPSHOT"]
                  [org.clojure/clojure "1.12.0"]
                  [org.clojure/core.match "1.1.0"]
                  [org.clojure/core.logic "1.1.0"]
                  [org.clojure/data.generators "1.1.0"]
-                 [tesser.math "1.0.6"]]
+                 [tesser.math "1.0.7"]]
   :java-source-paths ["src"]
   :javac-options ["--release" "11"]
   :repl-options {:init-ns jepsen.tigerbeetle.repl}
