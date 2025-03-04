@@ -82,7 +82,7 @@
   clojure.lang.IPersistentSet
   (->json-node [x]
     (reduce (fn [^ArrayNode a, e]
-              (.add a e))
+              (.add a (->json-node e)))
             (.createArrayNode om)
             x))
 
@@ -97,6 +97,11 @@
   (->json-node [x]
     (name x))
 
+  clojure.lang.BigInt
+  (->json-node [x]
+    ; Weirdly Jackson takes bigdecimals but not bigintegers
+    (bigdec x))
+
   java.lang.Number
   (->json-node [x] x)
 
@@ -104,7 +109,10 @@
   (->json-node [x] x)
 
   java.lang.Boolean
-  (->json-node [x] x))
+  (->json-node [x] x)
+
+  nil
+  (->json-node [x] nil))
 
 (defn assert-always
   "Asserts that expr is true every time, and that it's called at least once.
@@ -118,6 +126,4 @@
     (pprint data'))
   (Assert/always (boolean expr)
                  message
-                 ^ObjectNode (when data
-                               (->json-node data)
-                               (.createObjectNode om))))
+                 ^ObjectNode (->json-node (if data data {}))))
