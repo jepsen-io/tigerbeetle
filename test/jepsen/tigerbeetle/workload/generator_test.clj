@@ -26,6 +26,15 @@
 (def a3  (reledger mt/a3))
 (def a3' (reledger mt/a3'))
 
+(deftest perfect-hash-bigint-test
+  ; Injective
+  (->> (range 16385)
+       (map g/perfect-hash-bigint)
+       frequencies
+       (remove (fn [[k v]] (= v 1)))
+       empty?
+       is))
+
 (deftest long-weights-test
   (are [x y] (= x (g/long-weights y))
        []           []

@@ -44,6 +44,26 @@
   (:import (jepsen.tigerbeetle.lifecycle_map ILifecycleMap
                                              LifecycleMap)))
 
+(defonce byte-shuffle-table
+  ; An array of 256 entries which randomly permutes a byte. We use this to
+  ; ensure keys aren't ordered.
+  (byte-array (shuffle (range 256))))
+
+(defn perfect-hash-bigint
+  "A perfect hash function for bigints. Used to turn our nice ordered IDs into
+  unordered ones, which can be more stressful for the database."
+  [x]
+  (bigint x)
+  #_(let [b  (biginteger x)
+        a   (.toByteArray b)
+        n   (alength a)]
+        ; Shuffle each byte
+    (loop [i 0]
+      (if (= i n)
+        (bigint (BigInteger. a))
+        (do (aset-byte a i (aget byte-shuffle-table (+ 128 (aget a i))))
+            (recur (inc i)))))))
+
 (defn rand-weighted-index
 	"Takes a total weight and a vector of weights for a weighted discrete
  distribution and generates a random index into those weights, with
@@ -206,7 +226,7 @@
 (defn fallback-id
   "Sometimes you just need an ID to start with."
   []
-  (bigint (inc (zipf 10))))
+  (perfect-hash-bigint (inc (zipf 10))))
 
 (defn import-timestamp
   "When we import, we need to generate sequential timestamps in the past. We
@@ -445,7 +465,8 @@
 		(let [ids (range next-id (+ next-id n))]
 			(->> ids
 					 (mapv (fn [id]
-                   (let [import? (import? this)
+                   (let [id      (perfect-hash-bigint id)
+                         import? (import? this)
                          exceeds (dg/weighted
                                    {#{} 128
                                     #{:debits-must-not-exceed-credits} 32
@@ -583,7 +604,7 @@
 		(let [ids (range next-id (+ next-id n))]
 			(->> ids
 					 (mapv (fn [id]
-									 (gen-new-transfer this id)))
+									 (gen-new-transfer this (perfect-hash-bigint id))))
 					 chains)))
 
 	(gen-lookup-accounts [this n]
@@ -658,19 +679,18 @@
 
 	(add-new-accounts [this new-accounts]
     ; We're invoking create-accounts.
-		(let [ids (mapv :id new-accounts)]
-			(assoc this
-						 :next-id (inc (reduce max next-id ids))
-             :ledger->accounts
-             (binto (fn ledgers [ledger->accounts account]
-                      (bm/update ledger->accounts
-                                 (:ledger account)
-                                 (fn add [accounts]
-                                   (let [^LifecycleMap lm
-                                         (or accounts lm/empty)]
-                                     (lm/add-unlikely lm account)))))
-               ledger->accounts
-               new-accounts))))
+    (assoc this
+           :next-id (+ next-id (count new-accounts))
+           :ledger->accounts
+           (binto (fn ledgers [ledger->accounts account]
+                    (bm/update ledger->accounts
+                               (:ledger account)
+                               (fn add [accounts]
+                                 (let [^LifecycleMap lm
+                                       (or accounts lm/empty)]
+                                   (lm/add-unlikely lm account)))))
+                  ledger->accounts
+                  new-accounts)))
 
   (add-new-accounts [this new-accounts results p]
     ; Zip through results, marking as likely or unseen
@@ -692,8 +712,7 @@
                        results))))
 
 	(add-new-transfers [this new-transfers]
-		(let [ids (mapv :id new-transfers)
-          ; As soon as we submit a pending transfer, it's something we could
+		(let [; As soon as we submit a pending transfer, it's something we could
           ; try to finish. Not always--this tends to create lots of races with
           ; a high chance of failure.
           ptids (reduce (fn [ptids t]
@@ -706,7 +725,7 @@
                         pending-transfer-ids
                         new-transfers)]
       (assoc this
-             :next-id   (inc (reduce max next-id ids))
+             :next-id   (+ next-id (count new-transfers))
              :transfers (reduce lm/add-unlikely transfers new-transfers)
              :pending-transfer-ids ptids)))
 
