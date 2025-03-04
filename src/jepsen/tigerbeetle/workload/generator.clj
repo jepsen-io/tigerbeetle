@@ -231,57 +231,6 @@
       18 2
          3)))
 
-(defn probe-lifecycle-map
-  "Sometimes we want to find an zipfian-distributed ID that's both in a
-  set of IDs and also has a particular lifecycle state. This tries to
-  find an ID in `ids` and which, in `lifecycle-map`, is mostly seen or likely,
-  as opposed to unlikely or imagined."
-  [ids lifecycle-map]
-  (let [n   (b/size ids)
-        ; Get keys from the lifecycle map.
-        submap (condp < (dg/double)
-                          0.0  lm/seen
-                          0.05 lm/likely
-                               lm/unlikely)
-        submap (submap lifecycle-map)
-        subkeys (bm/keys submap)]
-    (cond ; IDs pool is empty; use anything from the submap
-          (= 0 n)
-          (zipf-nth zipf-default-skew subkeys (fallback-id))
-
-          ; Submap is empty; fall back to pool
-          (= 0 (b/size submap))
-          (zipf-nth zipf-default-skew ids (fallback-id))
-
-          ; When one collection is small, just intersect them
-          (or (<= (b/size ids) 128)
-              (<= (b/size subkeys) 128))
-          (zipf-nth zipf-default-skew
-                    (bs/intersection ids subkeys)
-                    (fallback-id))
-
-          ; Alternate between probing ids and subkeys randomly, looking for
-          ; presence in the other set.
-          true
-          (loop [tries (min n 10)]
-            ; From IDs
-            (if (= 0 tries)
-              (do ;(info "probe for intersection of" (sort ids) "and"
-                  ;      (sort subkeys) "failed\nIntersection: "
-                  ;      (sort (bs/intersection ids subkeys)))
-                  ; TODO: This intersection is probably too expensive for long
-                  ; runs; might need to fall back. I'm still trying to tune
-                  ; this to get something that succeeds reasonably often.
-                  (zipf-nth zipf-default-skew (bs/intersection ids subkeys)
-                            (fallback-id)))
-              (let [id (zipf-nth ids)]
-                (if (bs/contains? subkeys id)
-                  id
-                  (let [id (zipf-nth subkeys)]
-                    (if (bs/contains? ids id)
-                      id
-                      (recur (dec tries)))))))))))
-
 (defn add-pending-transfer
   "Adds a pending transfer, with probability p, to the pending transfer ID
   set. Does not add if present in completed-transfer-ids."

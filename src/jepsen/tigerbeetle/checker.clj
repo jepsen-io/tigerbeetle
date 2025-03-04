@@ -899,6 +899,7 @@
 
                          true
                          true)]
+        (info "Asserting Antithesis validity:" (true? valid?))
         (a/assert-always (true? valid?) "checker valid" a)
         (assoc a :valid? valid?)))))
 
