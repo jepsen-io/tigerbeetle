@@ -114,16 +114,10 @@
   nil
   (->json-node [x] nil))
 
-(defn assert-always
+(defmacro assert-always
   "Asserts that expr is true every time, and that it's called at least once.
   Takes a map of data which is serialized to JSON."
   [expr message data]
-  (assert (or (nil? data) (map? data)))
-  (println "data")
-  (pprint data)
-  (let [data' (->json-node data)]
-    (println "as json")
-    (pprint data'))
-  (Assert/always (boolean expr)
-                 message
-                 ^ObjectNode (->json-node (if data data {}))))
+  `(Assert/always (boolean ~expr)
+                  ~message
+                  (->json-node ~data)))
