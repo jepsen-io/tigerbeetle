@@ -6,9 +6,13 @@ Jepsen tests for the TigerBeetle distributed database.
 
 You'll need a [Jepsen environment](https://github.com/jepsen-io/jepsen?tab=readme-ov-file#setting-up-a-jepsen-environment).
 
-## Usage
+## Quickstart
 
-FIXME
+To run a full suite of tests:
+
+```
+lein run test-all
+```
 
 Use `lein repl` to get a REPL shell with a bunch of useful utilities.
 `(store/latest)` will grab the most recent test, if you'd like to start
@@ -19,11 +23,13 @@ load a specific test.
 
 The main workload is `transfer`, which tries to perform all the usual
 TigerBeetle operations, and measures their correctness against a singlethreaded
-model specification. The `idempotence` workload looks very similar, but tries
-to submit the same IDs multiple times, and measures whether a.) two creates
-succeed, and b.) you can read conflicting information for a single ID. The
-`indefinite` workload measures how often indefinite operations (e.g. timed-out
-operations) approximately succeed vs fail, as seen during the final read phase.
+model specification.
+
+The `idempotence` workload looks very similar, but tries to submit the same IDs
+multiple times, and measures whether a.) two creates succeed, and b.) you can
+read conflicting information for a single ID. The `indefinite` workload
+measures how often indefinite operations (e.g. timed-out operations)
+approximately succeed vs fail, as seen during the final read phase.
 
 ## Known Limitations
 
