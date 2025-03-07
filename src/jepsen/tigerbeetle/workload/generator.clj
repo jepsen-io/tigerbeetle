@@ -44,24 +44,34 @@
   (:import (jepsen.tigerbeetle.lifecycle_map ILifecycleMap
                                              LifecycleMap)))
 
-(defonce byte-shuffle-table
-  ; An array of 256 entries which randomly permutes a byte. We use this to
-  ; ensure keys aren't ordered.
-  (byte-array (shuffle (range 256))))
+(defonce^:bytes byte-shuffle-table-signed
+  ; This is a unique permutation of the unsigned bytes [0, 256) which leaves
+  ; the sign bit intact. We do this to avoid messing up the signed
+  ; twos-complement representation used by BigInteger's byte arrays. We also
+  ; map signed 0 -> 0, which prevents us from mapping bytes [x], [x, x], and
+  ; [x, x, x] all to zero.
+  (byte-array (concat ; We take a signed byte, add 128, and index into this
+                      ; array. Negative bytes all hit indexes [0, 128). These
+                      ; need to emit values in [-128, 0), which have their
+                      ; high bit set.
+                      (shuffle (range -128 0))
+                      ; Zero is special
+                      [0]
+                      ; Positive bytes hit indices [129, 256).
+                      (shuffle (range 1 128)))))
 
 (defn perfect-hash-bigint
   "A perfect hash function for bigints. Used to turn our nice ordered IDs into
   unordered ones, which can be more stressful for the database."
   [x]
-  (bigint x)
-  #_(let [b  (biginteger x)
+  (let [b  (biginteger x)
         a   (.toByteArray b)
         n   (alength a)]
-        ; Shuffle each byte
+    ; Shuffle bytes
     (loop [i 0]
-      (if (= i n)
-        (bigint (BigInteger. a))
-        (do (aset-byte a i (aget byte-shuffle-table (+ 128 (aget a i))))
+      (if (<= n i)
+        (bigint (BigInteger. a)) ; Done
+        (do (aset-byte a i (aget byte-shuffle-table-signed (+ 128 (aget a i))))
             (recur (inc i)))))))
 
 (defn rand-weighted-index

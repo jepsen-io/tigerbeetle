@@ -26,14 +26,29 @@
 (def a3  (reledger mt/a3))
 (def a3' (reledger mt/a3'))
 
+(deftest byte-shuffle-table-signed-test
+  ; Check to make sure that every transform preserves sign.
+  (is (->> (range -128 0)
+           (map #(aget g/byte-shuffle-table-signed (+ 128 %)))
+           (every? neg?)))
+  (is (->> (range 0 128)
+           (map #(aget g/byte-shuffle-table-signed (+ 128 %)))
+           (every? (complement neg?))))
+  ; And that there are no duplicates
+  (is (distinct? (seq g/byte-shuffle-table-signed))))
+
 (deftest perfect-hash-bigint-test
-  ; Injective
-  (->> (range 16385)
-       (map g/perfect-hash-bigint)
-       frequencies
-       (remove (fn [[k v]] (= v 1)))
-       empty?
-       is))
+  (let [ids (->> (range 100000)
+                 (mapv g/perfect-hash-bigint))]
+    (testing "injective"
+       (->> ids
+            frequencies
+            (remove (fn [[k v]] (= v 1)))
+            empty?
+            is))
+    (testing "non-negative"
+      ;(pprint (take 300 ids))
+      (is (not-any? neg? ids)))))
 
 (deftest long-weights-test
   (are [x y] (= x (g/long-weights y))
@@ -75,7 +90,8 @@
 
 (deftest transfer-account-id-test
   ; As soon as we create an account, transfers should start using it.
-  (with-relative-time
+  (with-redefs [g/perfect-hash-bigint identity]
+    (with-relative-time
     (let [g (-> g
                 (gen/update test ctx
                             (h/op {:index 0
@@ -120,9 +136,9 @@
           ; Generating IDs biases strongly towards 1, rather than 2.
           (let [n 1000
                 freqs (fn [f]
-                        (update-vals
-                          (frequencies (take n (repeatedly f)))
-                          (partial * (float (/ n)))))
+                          (update-vals
+                            (frequencies (take n (repeatedly f)))
+                            (partial * (float (/ n)))))
                 ; Globally
                 ids  (freqs #(g/rand-account-id s))
                 ; In ledger 1
@@ -149,7 +165,7 @@
               as (-> g :state :ledger->accounts (bm/get l1))]
           ; Both are now unlikely
           (is (= {} (datafy (lm/likely as ))))
-          (is (= {1N a1, 3N a3} (datafy (lm/unlikely as)))))))))
+          (is (= {1N a1, 3N a3} (datafy (lm/unlikely as))))))))))
 
 (deftest pending-transfer-ids-test
   (let [t10 (t 10N a1 a2 5N #{:pending})
@@ -165,8 +181,8 @@
                                    :f :create-transfers,
                                    :value [t10]}))))]
 
-    ; As soon as we submit the transfer, we have a small chance to record it as
-    ; pending.
+    ; As soon as we submit the transfer, we have a small chance to record it
+    ; as pending.
     (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))
 
     ; If the pending transfer completes OK, we leave it in pending
@@ -242,7 +258,7 @@
                                      :type :ok
                                      :f :create-transfers
                                      :value [:exceeds-debits]}))]
-          (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
+            (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
 
         ; If the post fails, leave it in
         (testing "post exceeds-debits"
@@ -252,7 +268,7 @@
                                      :type :fail
                                      :f :create-transfers
                                      :value nil}))]
-          (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
+            (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
 
         ; If the post crashes, leave it in
         (testing "post exceeds-debits"
@@ -262,5 +278,5 @@
                                      :type :info
                                      :f :create-transfers
                                      :value nil}))]
-          (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
-    ))))
+            (is (= #{10N} (datafy (:pending-transfer-ids (:state g)))))))
+        ))))

@@ -2,6 +2,7 @@
   (:require [clojure [datafy :refer [datafy]]
                      [pprint :refer [pprint]]
                      [test :refer :all]]
+            [clj-commons.byte-streams :as bs]
             [jepsen.tigerbeetle.client :as c]))
 
 (deftest account-batch-test
@@ -33,4 +34,8 @@
     (testing "triple"
       (is (= [(merge blank a1) (merge blank a2) (merge blank a1)]
               (rt [a1 a2 a1]))))
-    ))
+
+    (testing "IDs"
+      (let [x (inc (bigint Long/MAX_VALUE))]
+        (is (= [x]
+               (mapv :id (rt [(assoc a1 :id x)]))))))))

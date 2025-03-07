@@ -140,6 +140,8 @@
   "Turns a Clojure bigint into a byte array."
   ^bytes [x]
   (assert (not (nil? x)) "Expected a bigint, but got nil")
+  ; TB will let you and happily return wrong values`
+  (assert (not (neg? x)) "Can't serialize negative integers!")
   (UInt128/asBytes (biginteger x)))
 
 (defn account-batch
