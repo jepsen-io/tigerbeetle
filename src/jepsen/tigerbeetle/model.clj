@@ -170,27 +170,27 @@
 ; The indentation is getting ridiculous
 (defmethod pprint/simple-dispatch jepsen.tigerbeetle.model.Inconsistent
   [i]
-	(.write ^java.io.Writer *out* (str (.getName (class i)) "{"))
-	(pprint/pprint-newline :mandatory)
-	(let [prefix "  "
-				suffix "}"]
-		(pprint/pprint-logical-block
-			:prefix prefix :suffix suffix
-			(pprint/print-length-loop [aseq (seq i)]
-																(when aseq
-																	(pprint/pprint-logical-block
-																		(pprint/write-out (key (first aseq)))
-																		(.write ^java.io.Writer *out* " ")
-																		(pprint/pprint-newline :miser)
-																		(pprint/write-out (fnext (first aseq))))
-																	(when (next aseq)
-																		(.write ^java.io.Writer *out* ", ")
-																		(pprint/pprint-newline :linear)
-																		(recur (next aseq))))))))
+  (.write ^java.io.Writer *out* (str (.getName (class i)) "{"))
+  (pprint/pprint-newline :mandatory)
+  (let [prefix "  "
+        suffix "}"]
+    (pprint/pprint-logical-block
+      :prefix prefix :suffix suffix
+      (pprint/print-length-loop [aseq (seq i)]
+                                (when aseq
+                                  (pprint/pprint-logical-block
+                                    (pprint/write-out (key (first aseq)))
+                                    (.write ^java.io.Writer *out* " ")
+                                    (pprint/pprint-newline :miser)
+                                    (pprint/write-out (fnext (first aseq))))
+                                  (when (next aseq)
+                                    (.write ^java.io.Writer *out* ", ")
+                                    (pprint/pprint-newline :linear)
+                                    (recur (next aseq))))))))
 
 (prefer-method pprint/simple-dispatch
-							 jepsen.tigerbeetle.model.Inconsistent
-							 clojure.lang.IPersistentMap)
+               jepsen.tigerbeetle.model.Inconsistent
+               clojure.lang.IPersistentMap)
 
 (def permanent-errors
   "A set of errors that we remember and return for subsequent attempts. See

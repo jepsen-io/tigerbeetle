@@ -10,7 +10,7 @@
                   :exclusions [com.fasterxml.jackson.core/jackson-databind
                                com.fasterxml.jackson.core/jackson-annotations]]
                  [com.tigerbeetle/tigerbeetle-java "0.16.30"]
-                 [jepsen "0.3.8"]
+                 [jepsen "0.3.9-SNAPSHOT"]
                  [org.clojure/clojure "1.12.0"]
                  [org.clojure/core.match "1.1.0"]
                  [org.clojure/core.logic "1.1.0"]

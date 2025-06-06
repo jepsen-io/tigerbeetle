@@ -75,7 +75,7 @@
             (recur (inc i)))))))
 
 (defn rand-weighted-index
-	"Takes a total weight and a vector of weights for a weighted discrete
+  "Takes a total weight and a vector of weights for a weighted discrete
  distribution and generates a random index into those weights, with
  probability proportionate to weight. Returns -1 when total-weight is 0."
   ([weights]
@@ -92,67 +92,67 @@
              (recur (inc i) sum'))))))))
 
 (defrecord WeightedMix [^long total-weight  ; Total weight
-												weights             ; Vector of weights
-												gens                ; Vector of generators
-												^long i]            ; Index of current weight/gen
-	gen/Generator
-	(op [this test ctx]
-		(when-not (= 0 (count gens))
-			(if-let [[op gen'] (gen/op (nth gens i) test ctx)]
-				; TODO: handle :pending
-				[op (WeightedMix. total-weight
-													weights
-													(assoc gens i gen')
-													(long (rand-weighted-index total-weight weights)))]
-				; Out of ops from this gen; compact and retry.
-				(let [total-weight' (- total-weight (weights i))
-							weights'      (gen/dissoc-vec weights i)
-							gens'         (gen/dissoc-vec gens i)
-							i'            (rand-weighted-index total-weight' weights')]
-					(gen/op (WeightedMix. total-weight' weights' gens' i') test ctx)))))
+                        weights             ; Vector of weights
+                        gens                ; Vector of generators
+                        ^long i]            ; Index of current weight/gen
+  gen/Generator
+  (op [this test ctx]
+    (when-not (= 0 (count gens))
+      (if-let [[op gen'] (gen/op (nth gens i) test ctx)]
+        ; TODO: handle :pending
+        [op (WeightedMix. total-weight
+                          weights
+                          (assoc gens i gen')
+                          (long (rand-weighted-index total-weight weights)))]
+        ; Out of ops from this gen; compact and retry.
+        (let [total-weight' (- total-weight (weights i))
+              weights'      (gen/dissoc-vec weights i)
+              gens'         (gen/dissoc-vec gens i)
+              i'            (rand-weighted-index total-weight' weights')]
+          (gen/op (WeightedMix. total-weight' weights' gens' i') test ctx)))))
 
-	(update [this test ctx event]
-		; Propagate to each gen
-		(when-not (= 0 (count gens))
-			(WeightedMix. total-weight
-										weights
-										(mapv #(gen/update % test ctx event) gens)
-										i))))
+  (update [this test ctx event]
+    ; Propagate to each gen
+    (when-not (= 0 (count gens))
+      (WeightedMix. total-weight
+                    weights
+                    (mapv #(gen/update % test ctx event) gens)
+                    i))))
 
 (defn long-weights
   "Takes an array of rational weights and scales them up such that all are
   integers. Approximate for floats."
-	[weights]
-	(let [denom (fn denominator+ [x]
-								(cond (integer? x) 1
-											(ratio? x) (denominator x)
-											(float? x) (Math/round ^Double (/ x))))
-				m (->> weights
-							 (map denom)
-							 (reduce lcm 1))]
-		(mapv (fn scale [x]
-						(let [s (* m x)]
-							(cond (integer? s)  s
-										(float? s)    (Math/round ^Double s)
-										true          (throw (RuntimeException.
-																					 (str "How did we even get "
-																								(class s) "x" (pr-str s)))))))
-					weights)))
+  [weights]
+  (let [denom (fn denominator+ [x]
+                (cond (integer? x) 1
+                      (ratio? x) (denominator x)
+                      (float? x) (Math/round ^Double (/ x))))
+        m (->> weights
+               (map denom)
+               (reduce lcm 1))]
+    (mapv (fn scale [x]
+            (let [s (* m x)]
+              (cond (integer? s)  s
+                    (float? s)    (Math/round ^Double s)
+                    true          (throw (RuntimeException.
+                                           (str "How did we even get "
+                                                (class s) "x" (pr-str s)))))))
+          weights)))
 
 (defn weighted-mix
   "A generator which combines several generators in a random, weighted mixture.
   Takes a flat series of `weight gen` pairs: a generator with weight 6 is
   chosen three times as often as one with weight 2. Updates are propagated to
   all generators."
-	[& weight-gens]
-	(assert (even? (count weight-gens)))
-	(when (seq weight-gens)
-		(let [weight-gens  (partition 2 weight-gens)
-					weights      (long-weights (map first weight-gens))
-					total-weight (reduce + weights)
-					gens         (mapv second weight-gens)]
-			(WeightedMix. total-weight weights gens
-										(rand-weighted-index total-weight weights)))))
+  [& weight-gens]
+  (assert (even? (count weight-gens)))
+  (when (seq weight-gens)
+    (let [weight-gens  (partition 2 weight-gens)
+          weights      (long-weights (map first weight-gens))
+          total-weight (reduce + weights)
+          gens         (mapv second weight-gens)]
+      (WeightedMix. total-weight weights gens
+                    (rand-weighted-index total-weight weights)))))
 
 (defn zipf-nth
   "Selects a random element from a Bifurcan collection with a Zipfian
@@ -390,11 +390,11 @@
                       operation."))
 
 (defrecord State
-	[
-	 next-id              ; The next ID we'll hand out
-	 ^long timestamp-min  ; The smallest timestamp observed
-	 ^long timestamp-max  ; The largest timestamp observed
-	 transfers            ; A LifecycleMap of id->transfer
+  [
+   next-id              ; The next ID we'll hand out
+   ^long timestamp-min  ; The smallest timestamp observed
+   ^long timestamp-max  ; The largest timestamp observed
+   transfers            ; A LifecycleMap of id->transfer
    ledger->accounts     ; A Bifurcan map of a ledger to a LifeCycleMap of
                         ; accounts
    pending-transfer-ids ; A Bifurcan set of IDs of transfers we intend to
@@ -406,13 +406,13 @@
    process->invoke
    ; Timestamp, in test-relative nanos, we emit imported events until.
    ^long import-until
-	 ]
+   ]
 
-	IState
-	(rand-account-id [this]
+  IState
+  (rand-account-id [this]
     (rand-account-id this (rand-ledger this)))
 
-	(rand-account-id [this ledger]
+  (rand-account-id [this ledger]
     (let [accounts (bm/get ledger->accounts ledger lm/empty)
           r (dg/double)]
       (bm/key
@@ -431,7 +431,7 @@
             ; If no options, make up a key
             (bm/->entry [(fallback-id) nil])))))
 
-	(rand-transfer-id [this]
+  (rand-transfer-id [this]
     (let [r (dg/double)]
       (bm/key
         (or (when (< 0.4 r)
@@ -443,25 +443,25 @@
             ; Make something up
             (bm/->entry [(bigint (inc (zipf 10))) nil])))))
 
-	(rand-ledger [this]
-		(inc (zipf 3)))
+  (rand-ledger [this]
+    (inc (zipf 3)))
 
-	(rand-user-data [this]
-		(inc (zipf 1000)))
+  (rand-user-data [this]
+    (inc (zipf 1000)))
 
-	(rand-code [this]
-		(inc (zipf 1000)))
+  (rand-code [this]
+    (inc (zipf 1000)))
 
-	(rand-timestamp [this]
-		(cond (< timestamp-min timestamp-max)
-					(dg/uniform timestamp-min timestamp-max)
+  (rand-timestamp [this]
+    (cond (< timestamp-min timestamp-max)
+          (dg/uniform timestamp-min timestamp-max)
 
-					(= timestamp-min timestamp-max)
-					timestamp-min
+          (= timestamp-min timestamp-max)
+          timestamp-min
 
-					; We haven't seen anything yet; might as well guess
-					true
-					(System/nanoTime)))
+          ; We haven't seen anything yet; might as well guess
+          true
+          (System/nanoTime)))
 
   (import? [this]
     (< (relative-time-nanos) import-until))
@@ -471,10 +471,10 @@
         lm/possible
         (bm/get id nil)))
 
-	(gen-new-accounts [this n]
-		(let [ids (range next-id (+ next-id n))]
-			(->> ids
-					 (mapv (fn [id]
+  (gen-new-accounts [this n]
+    (let [ids (range next-id (+ next-id n))]
+      (->> ids
+           (mapv (fn [id]
                    (let [id      (perfect-hash-bigint id)
                          import? (import? this)
                          exceeds (dg/weighted
@@ -488,33 +488,33 @@
                                  (< (dg/double) 1/2) (conj :history)
                                  ; Are we importing?
                                  import? (conj :imported))]
-									 {:id        id
-										:ledger    (account-id->ledger id)
-										:code      (rand-code this)
-										:user-data (rand-user-data this)
-										:flags     flags
+                   {:id        id
+                    :ledger    (account-id->ledger id)
+                    :code      (rand-code this)
+                    :user-data (rand-user-data this)
+                    :flags     flags
                     :timestamp (if import?
                                  (import-timestamp id)
                                  0)})))
-					 chains)))
+           chains)))
 
-	(gen-new-transfer-1 [this id]
-		(let [import?           (import? this)
+  (gen-new-transfer-1 [this id]
+    (let [import?           (import? this)
           debit-account-id  (rand-account-id this)
           ; NB: The account ID we generate might be fake!
           debit-account     (get-account this debit-account-id)
-					ledger            (:ledger debit-account (rand-ledger this))
-					; Mostly generate distinct debit/credit accounts
-					credit-account-id (loop [tries 10]
-															(let [id (rand-account-id this ledger)]
-																(if (and (pos? tries) (= id debit-account-id))
-																	(recur (dec tries))
-																	id)))
+          ledger            (:ledger debit-account (rand-ledger this))
+          ; Mostly generate distinct debit/credit accounts
+          credit-account-id (loop [tries 10]
+                              (let [id (rand-account-id this ledger)]
+                                (if (and (pos? tries) (= id debit-account-id))
+                                  (recur (dec tries))
+                                  id)))
           pending? (< (dg/double) 1/2)
           closing? (< (dg/double) 1/16384)
-					flags (cond-> #{}
+          flags (cond-> #{}
                   ; Half of transfers are pending
-									pending? (conj :pending)
+                  pending? (conj :pending)
                   ; Pending transfers have a small chance to close
                   (and pending? closing? (< (dg/double) 1/2))
                   (conj :closing-debit)
@@ -526,18 +526,18 @@
                   ; Imports
                   import? (conj :imported))]
 
-			{:id                id
-			 :debit-account-id  debit-account-id
-			 :credit-account-id credit-account-id
-			 :amount            (if (< (dg/double) 0.01)
-														; Sometimes we generate zero transfers
-														0
-														; But mostly, zipf-distributed ones
-														(inc (zipf 1000)))
-			 :ledger            ledger
-			 :code              (rand-code this)
-			 :user-data         (rand-user-data this)
-			 :flags             flags
+      {:id                id
+       :debit-account-id  debit-account-id
+       :credit-account-id credit-account-id
+       :amount            (if (< (dg/double) 0.01)
+                            ; Sometimes we generate zero transfers
+                            0
+                            ; But mostly, zipf-distributed ones
+                            (inc (zipf 1000)))
+       :ledger            ledger
+       :code              (rand-code this)
+       :user-data         (rand-user-data this)
+       :flags             flags
        :timestamp         (if import?
                             (import-timestamp id)
                             0)}))
@@ -600,94 +600,94 @@
                               (import-timestamp id)
                               0)})))
 
-	(gen-new-transfer [this id]
+  (gen-new-transfer [this id]
     ; Single-phase transfers are roughly half pending, so in a perfect world
     ; we'd do second-phase transfers roughly 1/3 of the time.
-		(if (< (dg/double) 2/3)
-			(gen-new-transfer-1 this id)
-			(or (gen-new-transfer-2 this id)
+    (if (< (dg/double) 2/3)
+      (gen-new-transfer-1 this id)
+      (or (gen-new-transfer-2 this id)
           ; If that fails (e.g. because we don't think there's anything
           ; pending), we shouldn't spin our wheels on useless post/voids.
           (gen-new-transfer-1 this id))))
 
-	(gen-new-transfers [this n]
-		(let [ids (range next-id (+ next-id n))]
-			(->> ids
-					 (mapv (fn [id]
-									 (gen-new-transfer this (perfect-hash-bigint id))))
-					 chains)))
+  (gen-new-transfers [this n]
+    (let [ids (range next-id (+ next-id n))]
+      (->> ids
+           (mapv (fn [id]
+                   (gen-new-transfer this (perfect-hash-bigint id))))
+           chains)))
 
-	(gen-lookup-accounts [this n]
-		(->> (repeatedly (partial rand-account-id this))
-				 (take n)
-				 vec))
+  (gen-lookup-accounts [this n]
+    (->> (repeatedly (partial rand-account-id this))
+         (take n)
+         vec))
 
-	(gen-lookup-transfers [this n]
-		(->> (repeatedly (partial rand-transfer-id this))
-				 (take n)
-				 vec))
+  (gen-lookup-transfers [this n]
+    (->> (repeatedly (partial rand-transfer-id this))
+         (take n)
+         vec))
 
-	(gen-query-filter [this]
-		(let [flags (cond-> #{}
-									; Mostly we want rcron; that way periodic reads will cover
-									; more of the space.
-									(< (dg/double) 9/10) (conj :reversed))
-					; A pair of timestamps for min and max
-					[t1 t2] (sort [(rand-timestamp this)
-												 (rand-timestamp this)])]
-			(cond-> {:flags flags
-							 :limit (dg/long 1 32)}
-				(< (dg/double) 1/4)
-				(assoc :timestamp-min t1)
+  (gen-query-filter [this]
+    (let [flags (cond-> #{}
+                  ; Mostly we want rcron; that way periodic reads will cover
+                  ; more of the space.
+                  (< (dg/double) 9/10) (conj :reversed))
+          ; A pair of timestamps for min and max
+          [t1 t2] (sort [(rand-timestamp this)
+                         (rand-timestamp this)])]
+      (cond-> {:flags flags
+               :limit (dg/long 1 32)}
+        (< (dg/double) 1/4)
+        (assoc :timestamp-min t1)
 
-				(< (dg/double) 1/4)
-				(assoc :timestamp-max t2)
+        (< (dg/double) 1/4)
+        (assoc :timestamp-max t2)
 
-				(< (dg/double) 1/8)
-				(assoc :ledger (rand-ledger this))
+        (< (dg/double) 1/8)
+        (assoc :ledger (rand-ledger this))
 
-				; These are relatively unlikely to match, so we generate them
-				; infrequently.
-				(< (dg/double) 1/16)
-				(assoc :code (rand-code this))
+        ; These are relatively unlikely to match, so we generate them
+        ; infrequently.
+        (< (dg/double) 1/16)
+        (assoc :code (rand-code this))
 
-				(< (dg/double) 1/16)
-				(assoc :user-data (rand-user-data this)))))
+        (< (dg/double) 1/16)
+        (assoc :user-data (rand-user-data this)))))
 
-	(gen-account-filter [this]
-		(let [flags (cond-> (condp < (dg/double)
-													; Very rarely, neither credits nor debits
-													0.99 #{}
-													; Sometimes both
-													0.8 #{:credits :debits}
-													; Mostly one
-													0.4 #{:credits}
-													#{:debits})
-									; Mostly we want rcron; that way periodic reads will cover
-									; more of the space
-									(< (dg/double) 9/10)
-									(conj :reversed))
-					; A pair of timestamps we can use for min and max.
-					[t1 t2] (sort [(rand-timestamp this)
-												 (rand-timestamp this)])]
-			(cond-> {:flags       flags
-							 :account-id  (rand-account-id this)
-							 :limit       (dg/long 1 32)}
-				(< (dg/double) 1/4)
-				(assoc :timestamp-min t1)
+  (gen-account-filter [this]
+    (let [flags (cond-> (condp < (dg/double)
+                          ; Very rarely, neither credits nor debits
+                          0.99 #{}
+                          ; Sometimes both
+                          0.8 #{:credits :debits}
+                          ; Mostly one
+                          0.4 #{:credits}
+                          #{:debits})
+                  ; Mostly we want rcron; that way periodic reads will cover
+                  ; more of the space
+                  (< (dg/double) 9/10)
+                  (conj :reversed))
+          ; A pair of timestamps we can use for min and max.
+          [t1 t2] (sort [(rand-timestamp this)
+                         (rand-timestamp this)])]
+      (cond-> {:flags       flags
+               :account-id  (rand-account-id this)
+               :limit       (dg/long 1 32)}
+        (< (dg/double) 1/4)
+        (assoc :timestamp-min t1)
 
-				(< (dg/double) 1/4)
-				(assoc :timestamp-max t2)
+        (< (dg/double) 1/4)
+        (assoc :timestamp-max t2)
 
-				; These are relatively unlikely to match, so we generate them
-				; infrequently
-				(< (dg/double) 1/16)
-				(assoc :user-data (rand-user-data this))
+        ; These are relatively unlikely to match, so we generate them
+        ; infrequently
+        (< (dg/double) 1/16)
+        (assoc :user-data (rand-user-data this))
 
-				(< (dg/double) 1/16)
-				(assoc :code (rand-code this)))))
+        (< (dg/double) 1/16)
+        (assoc :code (rand-code this)))))
 
-	(add-new-accounts [this new-accounts]
+  (add-new-accounts [this new-accounts]
     ; We're invoking create-accounts.
     (assoc this
            :next-id (+ next-id (count new-accounts))
@@ -721,8 +721,8 @@
                        new-accounts
                        results))))
 
-	(add-new-transfers [this new-transfers]
-		(let [; As soon as we submit a pending transfer, it's something we could
+  (add-new-transfers [this new-transfers]
+    (let [; As soon as we submit a pending transfer, it's something we could
           ; try to finish. Not always--this tends to create lots of races with
           ; a high chance of failure.
           ptids (reduce (fn [ptids t]
@@ -781,12 +781,12 @@
            :completed-transfer-ids completed-transfer-ids
            :pending-transfer-ids   pending-transfer-ids)))
 
-	(read-accounts [this results]
-		(let [timestamps (keep :timestamp results)]
-			(assoc this
-						 :timestamp-min (reduce min timestamp-min timestamps)
-						 :timestamp-max (reduce max timestamp-max timestamps)
-						 :ledger->accounts
+  (read-accounts [this results]
+    (let [timestamps (keep :timestamp results)]
+      (assoc this
+             :timestamp-min (reduce min timestamp-min timestamps)
+             :timestamp-max (reduce max timestamp-max timestamps)
+             :ledger->accounts
              (reduce (fn [ledger->accounts id]
                        (bm/update ledger->accounts
                                   (account-id->ledger id)
@@ -817,13 +817,13 @@
                        ids
                        results))))
 
-	(read-transfers [this results]
-		(let [timestamps (keep :timestamp transfers)]
-			(assoc this
-						 :timestamp-min (reduce min timestamp-min timestamps)
-						 :timestamp-max (reduce max timestamp-max timestamps)
+  (read-transfers [this results]
+    (let [timestamps (keep :timestamp transfers)]
+      (assoc this
+             :timestamp-min (reduce min timestamp-min timestamps)
+             :timestamp-max (reduce max timestamp-max timestamps)
              :transfers
-						 (reduce lm/is-seen transfers (keep :id results))
+             (reduce lm/is-seen transfers (keep :id results))
              ; If we read a pending txn, we have a chance to record it as
              ; pending (unless it's already completed). This helps us complete
              ; transfers that fall through the cracks.
@@ -885,13 +885,13 @@
 ; A generator which maintains the state and ensures its wrapped generator has
 ; access to it via the context map.
 (defrecord GenContext [gen state]
-	gen/Generator
-	(op [this test ctx]
-		(when-let [[op gen'] (gen/op gen test (assoc ctx :state state))]
-			[op (GenContext. gen' state)]))
+  gen/Generator
+  (op [this test ctx]
+    (when-let [[op gen'] (gen/op gen test (assoc ctx :state state))]
+      [op (GenContext. gen' state)]))
 
-	(update [this test ctx op]
-		(let [{:keys [process type f value]} op
+  (update [this test ctx op]
+    (let [{:keys [process type f value]} op
           ; Log invocation
           state (if (h/invoke? op)
                   (log-invoke state op)
@@ -980,58 +980,58 @@
       (gen/update gen test ctx event))))
 
 (defn wrap-gen
-	"Wraps a generator in one that maintains our state."
-	[gen]
+  "Wraps a generator in one that maintains our state."
+  [gen]
   (GenContextInit. gen))
 
 (defn rand-event-count
-	"Generates a random number of events (e.g. for a single create-transfer op)"
-	[]
-	(if (< (dg/double) 0.01)
-		0
-		(inc (zipf 1.5 128))))
+  "Generates a random number of events (e.g. for a single create-transfer op)"
+  []
+  (if (< (dg/double) 0.01)
+    0
+    (inc (zipf 1.5 128))))
 
 (defn create-accounts-gen
-	"A generator for create-accounts operations."
-	[test ctx]
-	{:f     :create-accounts
-	 :value (gen-new-accounts (:state ctx) (rand-event-count))})
+  "A generator for create-accounts operations."
+  [test ctx]
+  {:f     :create-accounts
+   :value (gen-new-accounts (:state ctx) (rand-event-count))})
 
 (defn create-transfers-gen
-	"A generator for create-transfers operations."
-	[test ctx]
-	{:f     :create-transfers
-	 :value (gen-new-transfers (:state ctx) (rand-event-count))})
+  "A generator for create-transfers operations."
+  [test ctx]
+  {:f     :create-transfers
+   :value (gen-new-transfers (:state ctx) (rand-event-count))})
 
 (defn lookup-accounts-gen
-	"A generator for lookup-accounts operations."
-	[test ctx]
-	{:f      :lookup-accounts
-	 :value  (gen-lookup-accounts (:state ctx) (rand-event-count))})
+  "A generator for lookup-accounts operations."
+  [test ctx]
+  {:f      :lookup-accounts
+   :value  (gen-lookup-accounts (:state ctx) (rand-event-count))})
 
 (defn lookup-transfers-gen
-	"A generator for lookup-transfers operations."
-	[test ctx]
-	{:f       :lookup-transfers
-	 :value   (gen-lookup-transfers (:state ctx) (rand-event-count))})
+  "A generator for lookup-transfers operations."
+  [test ctx]
+  {:f       :lookup-transfers
+   :value   (gen-lookup-transfers (:state ctx) (rand-event-count))})
 
 (defn query-accounts-gen
-	"A generator for query-accounts operations."
-	[test ctx]
-	{:f     :query-accounts
-	 :value (gen-query-filter (:state ctx))})
+  "A generator for query-accounts operations."
+  [test ctx]
+  {:f     :query-accounts
+   :value (gen-query-filter (:state ctx))})
 
 (defn query-transfers-gen
-	"A generator for query-transfers operations."
-	[test ctx]
-	{:f     :query-transfers
-	 :value (gen-query-filter (:state ctx))})
+  "A generator for query-transfers operations."
+  [test ctx]
+  {:f     :query-transfers
+   :value (gen-query-filter (:state ctx))})
 
 (defn get-account-transfers-gen
-	"A generator for get-account-transfers operations."
-	[test ctx]
-	{:f       :get-account-transfers
-	 :value   (gen-account-filter (:state ctx))})
+  "A generator for get-account-transfers operations."
+  [test ctx]
+  {:f       :get-account-transfers
+   :value   (gen-account-filter (:state ctx))})
 
 (defn get-account-balances-gen
   "A generator for get-account-balances operations."
@@ -1050,76 +1050,76 @@
                         lm/debug)}})
 
 (defn r-gen
-	"Generator purely of read operations during the main phase."
-	[{:keys [fs] :as opts}]
-	(weighted-mix
-		1  (when (:lookup-accounts fs)       lookup-accounts-gen)
-		1  (when (:lookup-transfers fs)      lookup-transfers-gen)
-		1  (when (:get-account-transfers fs) get-account-transfers-gen)
+  "Generator purely of read operations during the main phase."
+  [{:keys [fs] :as opts}]
+  (weighted-mix
+    1  (when (:lookup-accounts fs)       lookup-accounts-gen)
+    1  (when (:lookup-transfers fs)      lookup-transfers-gen)
+    1  (when (:get-account-transfers fs) get-account-transfers-gen)
     1  (when (:get-account-balances fs)  get-account-balances-gen)
-		1  (when (:query-accounts fs)        query-accounts-gen)
-		1  (when (:query-transfers fs)       query-transfers-gen)))
+    1  (when (:query-accounts fs)        query-accounts-gen)
+    1  (when (:query-transfers fs)       query-transfers-gen)))
 
 (defn rw-gen
-	"Generator of read and write events during the main phase. Takes two options:
+  "Generator of read and write events during the main phase. Takes two options:
 
  :ta-ratio    The ratio of create-transfers to create-accounts
  :rw-ratio    The ratio of reads to writes overall"
-	[{:keys [ta-ratio rw-ratio fs] :as opts}]
-	(let [; Weights for create-accounts and create-transfers
-				a 1
-				t (* ta-ratio a)
-				; Weight of all writes
-				w (+ a t)
-				; Weight of all reads
-				r (* rw-ratio w)]
-		(weighted-mix
-			a   (when (:create-accounts fs)       create-accounts-gen)
-			t   (when (:create-transfers fs)      create-transfers-gen)
-			r   (r-gen opts)
+  [{:keys [ta-ratio rw-ratio fs] :as opts}]
+  (let [; Weights for create-accounts and create-transfers
+        a 1
+        t (* ta-ratio a)
+        ; Weight of all writes
+        w (+ a t)
+        ; Weight of all reads
+        r (* rw-ratio w)]
+    (weighted-mix
+      a   (when (:create-accounts fs)       create-accounts-gen)
+      t   (when (:create-transfers fs)      create-transfers-gen)
+      r   (r-gen opts)
       ;a   debug-gen-gen
       )))
 
 (defn rw-threads
-	"Given n nodes and c threads, how many threads should do reads *and* writes?"
-	[n c]
-	(assert (pos? n))
-	(assert (pos? c))
-	(if (< c n)
-		c
-		(-> (quot c n)
-				(/ 2)
-				Math/ceil
-				long
-				(* n))))
+  "Given n nodes and c threads, how many threads should do reads *and* writes?"
+  [n c]
+  (assert (pos? n))
+  (assert (pos? c))
+  (if (< c n)
+    c
+    (-> (quot c n)
+        (/ 2)
+        Math/ceil
+        long
+        (* n))))
 
 (defn split-rw-gen
-	"An experimental main phase generator. We aim to have half of our processes
+  "An experimental main phase generator. We aim to have half of our processes
  performing reads only, and half performing reads and writes. This is only
  useful if TigerBeetle has a write path that gets stuck when reads wouldn't.
  Since right now reads go through the full consensus commit process, there's
  no point to doing this."
-	[opts]
-	(let [c (:concurrency opts)
-				n (count (:nodes opts))]
-		(gen/reserve (rw-threads n c) (rw-gen opts)
-								 (r-gen opts))))
+  [opts]
+  (let [c (:concurrency opts)
+        n (count (:nodes opts))]
+    (gen/reserve (rw-threads n c) (rw-gen opts)
+                 (r-gen opts))))
 
 (def gen
-	"The main phase generator."
-	rw-gen)
+  "The main phase generator."
+  rw-gen)
 
 (def final-gen-chunk-size
-	"Roughly how many things do we try to read per final read?"
-	128)
+  "Roughly how many things do we try to read per final read?"
+  128)
 
 (defrecord FinalReadGen [f ; f for emitted ops
-												 ; Bifurcan map of first id in chunk to a vector of IDs
-												 chunks]
-	gen/Generator
-	(op [this test ctx]
-		(when (pos? (b/size chunks))
-			; Pick a random pending chunk
+                         ; Bifurcan map of first id in chunk to a vector of IDs
+                         chunks]
+  gen/Generator
+  (op [this test ctx]
+    (when (pos? (b/size chunks))
+      ; Pick a random pending chunk
       (let [i    (rand-int (b/size chunks))
             pair (b/nth chunks i)]
         [(gen/fill-in-op
