@@ -4,18 +4,19 @@
   :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
             :url "https://www.eclipse.org/legal/epl-2.0/"}
   :dependencies [[camel-snake-kebab "0.4.3"]
-                 [cheshire "5.13.0"]
+                 [cheshire "6.1.0"]
                  [com.aphyr/bifurcan-clj "0.1.3"]
-                 [com.antithesis/sdk "1.4.2"
+                 [com.antithesis/sdk "1.4.4"
                   :exclusions [com.fasterxml.jackson.core/jackson-databind
                                com.fasterxml.jackson.core/jackson-annotations]]
-                 [com.tigerbeetle/tigerbeetle-java "0.16.30"]
-                 [jepsen "0.3.9-SNAPSHOT"]
-                 [org.clojure/clojure "1.12.0"]
+                 [com.tigerbeetle/tigerbeetle-java "0.16.62"]
+                 [jepsen "0.3.10-SNAPSHOT"]
+                 [org.clojure/clojure "1.12.3"]
                  [org.clojure/core.match "1.1.0"]
                  [org.clojure/core.logic "1.1.0"]
                  [org.clojure/data.generators "1.1.0"]
-                 [tesser.math "1.0.7"]]
+                 [tesser.math "1.0.8-SNAPSHOT"
+                  :exclusions [org.slf4j/slf4j-api]]]
   :java-source-paths ["src"]
   :javac-options ["--release" "11"]
   :repl-options {:init-ns jepsen.tigerbeetle.repl}
@@ -29,6 +30,6 @@
                    :all     (fn [m] true)
                    :focus   :focus}
   :profiles {:dev {:dependencies
-                   [[com.gfredericks/test.chuck "0.2.14"]
+                   [[com.gfredericks/test.chuck "0.2.15"]
                     [org.clojure/test.check "1.1.1"]]}})
 

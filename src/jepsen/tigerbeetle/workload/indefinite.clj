@@ -19,8 +19,8 @@
                     [client :as client]
                     [generator :as gen]
                     [history :as h]
-                    [util :refer [timeout zipf zipf-default-skew
-                                  nil-if-empty]]]
+                    [random :as rand :refer [zipf zipf-default-skew]]
+                    [util :refer [timeout nil-if-empty]]]
             [jepsen.tigerbeetle [antithesis :as a]
                                 [core :refer :all]
                                 [checker :as tigerbeetle.checker]
@@ -86,7 +86,7 @@
   (op [this test ctx]
     (when (pos? (b/size chunks))
       ; Pick a random pending chunk
-      (let [i    (rand-int (b/size chunks))
+      (let [i    (rand/long (b/size chunks))
             pair (b/nth chunks i)]
         [(gen/fill-in-op
            {:f        :lookup-accounts

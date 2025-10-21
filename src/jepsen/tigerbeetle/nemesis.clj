@@ -10,6 +10,7 @@
                     [generator :as gen]
                     [net :as net]
                     [util :as util]
+                    [random :as rand]
                     [role :as role]]
             [jepsen.nemesis [combined :as nc]
                             [file :as nf]
@@ -24,7 +25,7 @@
   (when (seq packages)
     (let [pkgs (->> packages
                     ; And pick a random subset of those
-                    util/random-nonempty-subset
+                    rand/nonempty-subset
                     vec)]
       ; If we drew nothing, try again.
       (if (seq pkgs)
@@ -44,7 +45,7 @@
   (repeatedly
     (fn rand-pkgs []
       (let [; Pick packages
-            pkgs (if (< (rand) 1/4)
+            pkgs (if (< (rand/double) 1/4)
                    ; Roughly 1/4 of the time, pick no pkgs
                     []
                     (package-gen-helper packages))
@@ -120,11 +121,11 @@
   gen/Generator
   (op [this test ctx]
     (let [m (util/minority (count (:nodes test)))
-          nodes (vec (take m (shuffle (:nodes test))))
+          nodes (vec (take m (rand/shuffle (:nodes test))))
           gen (fn gen []
                 {:type  :info
                  :f     :reformat
-                 :value (util/random-nonempty-subset nodes)})]
+                 :value (rand/nonempty-subset nodes)})]
       (gen/op gen test ctx)))
 
   (update [this test ctx op]
@@ -245,7 +246,7 @@
   [zones]
   (if zones
     (fn add-zone [op]
-      (let [zone (rand-nth zones)
+      (let [zone (rand/nth zones)
             [start end] (get file-zones zone)
             chunk-size (get file-zone-chunk-sizes zone)
             value' (map (fn [corruption]

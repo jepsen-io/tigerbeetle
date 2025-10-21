@@ -11,12 +11,12 @@
             [clojure [datafy :refer [datafy]]
                      [pprint :refer [pprint]]]
             [clojure.core.match :refer [match]]
-            [clojure.data.generators :as dg]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [letr loopr]]
             [jepsen [checker :as checker]
                     [generator :as gen]
                     [history :as h]
+                    [random :as rand]
                     [util :refer [timeout zipf zipf-default-skew
                                   nil-if-empty]]]
             [jepsen.tigerbeetle [core :refer :all]
@@ -43,12 +43,12 @@
       (if (= i n)
         (persistent! events)
         (recur (inc i)
-               (if (and (< (dg/double) p)
+               (if (and (< (rand/double) p)
                         (< 0 (b/size memory)))
                  ; Replace. We can either swap just the ID, or the entire value.
                  (if-let [replacement (zipf-nth memory)]
                    (assoc! events i
-                           (condp < (dg/double)
+                           (condp < (rand/double)
                              ; Just replace ID+ledger. Why ledger? Because the
                              ; underlying generator keeps track of accounts
                              ; organized by ledger, and if we mess up that
@@ -76,7 +76,7 @@
                  (bl/add-last memory event)
 
                  ; Replacement
-                 (< (dg/double) p)
+                 (< (rand/double) p)
                  (bl/set memory (zipf max-size) event)
 
                  true

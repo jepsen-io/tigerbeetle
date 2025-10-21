@@ -30,21 +30,20 @@
             [clojure [datafy :refer [datafy]]
                      [pprint :refer [pprint]]]
             [clojure.core.match :refer [match]]
-            [clojure.data.generators :as dg]
             [clojure.math.numeric-tower :refer [lcm]]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr reducer]]
             [jepsen [generator :as gen]
                     [history :as h]
-                    [util :as util :refer [zipf zipf-default-skew
-                                           relative-time-nanos]]]
+                    [random :as rand :refer [zipf zipf-default-skew]]
+                    [util :as util :refer [relative-time-nanos]]]
             [jepsen.tigerbeetle [core :refer [bireduce]]
                                 [lifecycle-map :as lm]]
             [potemkin :refer [definterface+]])
   (:import (jepsen.tigerbeetle.lifecycle_map ILifecycleMap
                                              LifecycleMap)))
 
-(defonce^:bytes byte-shuffle-table-signed
+(defonce ^:bytes byte-shuffle-table-signed
   ; This is a unique permutation of the unsigned bytes [0, 256) which leaves
   ; the sign bit intact. We do this to avoid messing up the signed
   ; twos-complement representation used by BigInteger's byte arrays. We also
@@ -54,11 +53,11 @@
                       ; array. Negative bytes all hit indexes [0, 128). These
                       ; need to emit values in [-128, 0), which have their
                       ; high bit set.
-                      (shuffle (range -128 0))
+                      (rand/shuffle (range -128 0))
                       ; Zero is special
                       [0]
                       ; Positive bytes hit indices [129, 256).
-                      (shuffle (range 1 128)))))
+                      (rand/shuffle (range 1 128)))))
 
 (defn perfect-hash-bigint
   "A perfect hash function for bigints. Used to turn our nice ordered IDs into
@@ -74,27 +73,10 @@
         (do (aset-byte a i (aget byte-shuffle-table-signed (+ 128 (aget a i))))
             (recur (inc i)))))))
 
-(defn rand-weighted-index
-  "Takes a total weight and a vector of weights for a weighted discrete
- distribution and generates a random index into those weights, with
- probability proportionate to weight. Returns -1 when total-weight is 0."
-  ([weights]
-   (rand-weighted-index (reduce + weights) weights))
-  ([^long total-weight weights]
-   (if (= 0 total-weight)
-     -1
-     (let [r (dg/long 0 total-weight)]
-       (loop [i   0
-              sum 0]
-         (let [sum' (+ sum ^long (weights i))]
-           (if (< r sum')
-             i
-             (recur (inc i) sum'))))))))
-
-(defrecord WeightedMix [^long total-weight  ; Total weight
-                        weights             ; Vector of weights
-                        gens                ; Vector of generators
-                        ^long i]            ; Index of current weight/gen
+(defrecord WeightedMix [^double  total-weight ; Total weight
+                        ^doubles weights      ; Array of weights
+                        gens                  ; Vector of generators
+                        ^long i]              ; Index of current weight/gen
   gen/Generator
   (op [this test ctx]
     (when-not (= 0 (count gens))
@@ -103,12 +85,15 @@
         [op (WeightedMix. total-weight
                           weights
                           (assoc gens i gen')
-                          (long (rand-weighted-index total-weight weights)))]
+                          (long (rand/weighted-index total-weight weights)))]
         ; Out of ops from this gen; compact and retry.
         (let [total-weight' (- total-weight (weights i))
-              weights'      (gen/dissoc-vec weights i)
+              weights'      (-> weights
+                                vec
+                                (gen/dissoc-vec i)
+                                double-array)
               gens'         (gen/dissoc-vec gens i)
-              i'            (rand-weighted-index total-weight' weights')]
+              i'            (rand/weighted-index total-weight' weights')]
           (gen/op (WeightedMix. total-weight' weights' gens' i') test ctx)))))
 
   (update [this test ctx event]
@@ -119,26 +104,6 @@
                     (mapv #(gen/update % test ctx event) gens)
                     i))))
 
-(defn long-weights
-  "Takes an array of rational weights and scales them up such that all are
-  integers. Approximate for floats."
-  [weights]
-  (let [denom (fn denominator+ [x]
-                (cond (integer? x) 1
-                      (ratio? x) (denominator x)
-                      (float? x) (Math/round ^Double (/ x))))
-        m (->> weights
-               (map denom)
-               (reduce lcm 1))]
-    (mapv (fn scale [x]
-            (let [s (* m x)]
-              (cond (integer? s)  s
-                    (float? s)    (Math/round ^Double s)
-                    true          (throw (RuntimeException.
-                                           (str "How did we even get "
-                                                (class s) "x" (pr-str s)))))))
-          weights)))
-
 (defn weighted-mix
   "A generator which combines several generators in a random, weighted mixture.
   Takes a flat series of `weight gen` pairs: a generator with weight 6 is
@@ -148,11 +113,11 @@
   (assert (even? (count weight-gens)))
   (when (seq weight-gens)
     (let [weight-gens  (partition 2 weight-gens)
-          weights      (long-weights (map first weight-gens))
+          weights      (double-array (map first weight-gens))
           total-weight (reduce + weights)
           gens         (mapv second weight-gens)]
       (WeightedMix. total-weight weights gens
-                    (rand-weighted-index total-weight weights)))))
+                    (rand/weighted-index total-weight weights)))))
 
 (defn zipf-nth
   "Selects a random element from a Bifurcan collection with a Zipfian
@@ -215,7 +180,7 @@
               ; Done.
               (persistent!
                 ; Almost never generate a trailing linked event
-                (if (< (dg/double) 1/1000)
+                (if (< (rand/double) 1/1000)
                   events
                   (assoc! events (dec n)
                           (update (get events (dec n)) :flags disj :linked))))
@@ -246,7 +211,7 @@
   (-> id
       ; Some entropy, just for grins
       (* 100)
-      (+ (rand 99))
+      (+ (rand/double 99))
       long))
 
 (defn account-id->ledger
@@ -265,7 +230,7 @@
   "Adds a pending transfer, with probability p, to the pending transfer ID
   set. Does not add if present in completed-transfer-ids."
   [completed-transfer-ids pending-transfer-ids p id]
-  (cond (< p (dg/double))
+  (cond (< p (rand/double))
        pending-transfer-ids
 
         (bs/contains? completed-transfer-ids id)
@@ -277,7 +242,7 @@
 (defn remove-pending-transfer
   "Removes a pending transfer from the pending ID set, with probability p."
   [pending-transfer-ids p id]
-  (if (< p (dg/double))
+  (if (< p (rand/double))
     pending-transfer-ids
     (bs/remove pending-transfer-ids id)))
 
@@ -287,7 +252,7 @@
   pending-ids]. With probability p, marks the transfer as completed and removes
   it from pending."
   [completed-transfer-ids pending-transfer-ids p id]
-  (if (< p (dg/double))
+  (if (< p (rand/double))
     [completed-transfer-ids pending-transfer-ids]
     [(bs/add completed-transfer-ids id) (bs/remove pending-transfer-ids id)]))
 
@@ -414,7 +379,7 @@
 
   (rand-account-id [this ledger]
     (let [accounts (bm/get ledger->accounts ledger lm/empty)
-          r (dg/double)]
+          r (rand/double)]
       (bm/key
         ; Note: account IDs are very often resolved to seen quickly, which
         ; means the chances that we have *any* likely accounts is low. We try a
@@ -432,7 +397,7 @@
             (bm/->entry [(fallback-id) nil])))))
 
   (rand-transfer-id [this]
-    (let [r (dg/double)]
+    (let [r (rand/double)]
       (bm/key
         (or (when (< 0.4 r)
               (zipf-nth zipf-default-skew (lm/likely transfers) nil))
@@ -454,7 +419,7 @@
 
   (rand-timestamp [this]
     (cond (< timestamp-min timestamp-max)
-          (dg/uniform timestamp-min timestamp-max)
+          (rand/long timestamp-min timestamp-max)
 
           (= timestamp-min timestamp-max)
           timestamp-min
@@ -477,7 +442,7 @@
            (mapv (fn [id]
                    (let [id      (perfect-hash-bigint id)
                          import? (import? this)
-                         exceeds (dg/weighted
+                         exceeds (rand/weighted
                                    {#{} 128
                                     #{:debits-must-not-exceed-credits} 32
                                     #{:credits-must-not-exceed-debits} 32
@@ -485,7 +450,7 @@
                                       :credits-must-not-exceed-debits} 1})
                          flags (cond-> exceeds
                                  ; Half of accounts track balance histories
-                                 (< (dg/double) 1/2) (conj :history)
+                                 (< (rand/double) 1/2) (conj :history)
                                  ; Are we importing?
                                  import? (conj :imported))]
                    {:id        id
@@ -510,26 +475,26 @@
                                 (if (and (pos? tries) (= id debit-account-id))
                                   (recur (dec tries))
                                   id)))
-          pending? (< (dg/double) 1/2)
-          closing? (< (dg/double) 1/16384)
+          pending? (< (rand/double) 1/2)
+          closing? (< (rand/double) 1/16384)
           flags (cond-> #{}
                   ; Half of transfers are pending
                   pending? (conj :pending)
                   ; Pending transfers have a small chance to close
-                  (and pending? closing? (< (dg/double) 1/2))
+                  (and pending? closing? (< (rand/double) 1/2))
                   (conj :closing-debit)
-                  (and pending? closing? (< (dg/double) 1/2))
+                  (and pending? closing? (< (rand/double) 1/2))
                   (conj :closing-credit)
                   ; Often we use balancing credits/debits
-                  (< (dg/double) 1/3) (conj :balancing-credit)
-                  (< (dg/double) 1/3) (conj :balancing-debit)
+                  (< (rand/double) 1/3) (conj :balancing-credit)
+                  (< (rand/double) 1/3) (conj :balancing-debit)
                   ; Imports
                   import? (conj :imported))]
 
       {:id                id
        :debit-account-id  debit-account-id
        :credit-account-id credit-account-id
-       :amount            (if (< (dg/double) 0.01)
+       :amount            (if (< (rand/double) 0.01)
                             ; Sometimes we generate zero transfers
                             0
                             ; But mostly, zipf-distributed ones
@@ -549,16 +514,16 @@
                                ; chance that during the test the pending set is
                                ; empty, so we don't want to do this *too*
                                ; often.
-                               (when (< (dg/double) 0.05)
+                               (when (< (rand/double) 0.05)
                                  (rand-transfer-id this)))]
       (let [import? (import? this)
             pending (or (bm/get (lm/possible transfers) pending-id nil)
                         ; Make up a transfer that doesn't exist
                         (gen-new-transfer-1 this (rand-transfer-id this)))
-            ledger (if (< (dg/double) 1/256)
+            ledger (if (< (rand/double) 1/256)
                      (rand-ledger this)
                      (:ledger pending))
-            post? (< (dg/double) 1/2)
+            post? (< (rand/double) 1/2)
             void? (not post?)
             flags (cond-> #{(if post?
                               :post-pending-transfer
@@ -568,31 +533,31 @@
          :pending-id        (:id pending)
          :debit-account-id
          (cond ; Rarely, mismatch
-               (< (dg/double) 1/1024)  (rand-account-id this ledger)
-               (< (dg/double) 1/2)    (:debit-account-id pending)
+               (< (rand/double) 1/1024)  (rand-account-id this ledger)
+               (< (rand/double) 1/2)    (:debit-account-id pending)
                true                   0N)
          :credit-account-id
          (cond ; Rarely, mismatch
-               (< (dg/double) 1/1024)  (rand-account-id this ledger)
-               (< (dg/double) 1/2)    (:credit-account-id pending)
+               (< (rand/double) 1/1024)  (rand-account-id this ledger)
+               (< (rand/double) 1/2)    (:credit-account-id pending)
                true                   0N)
          :amount
          (cond ; Rarely: try for *more* than we reserved
-               (< (dg/double) 1/1024)  (+ (:amount pending) (zipf 1000) 1)
+               (< (rand/double) 1/1024)  (+ (:amount pending) (zipf 1000) 1)
                ; Sometimes try for less. These are zipfian to give us a
                ; higher chance of succeeding with balancing transfers.
-               (and post? (< (dg/double) 1/4)) (zipf (:amount pending))
+               (and post? (< (rand/double) 1/4)) (zipf (:amount pending))
                ; Less often, the exact amount. This is likely to fail often
                ; because we often generate pending transfers with balancing
                ; debit/credit.
-               (< (dg/double) 1/16)    (:amount pending)
+               (< (rand/double) 1/16)    (:amount pending)
                ; Mostly we complete with 0, which works well with balancing
                ; transfers.
                true                   0N)
          :ledger            ledger
          :code              (cond ; Rarely: wrong code
-                                  (< (dg/double) 1/256) (rand-code this)
-                                  (< (dg/double) 1/2)   (:code pending)
+                                  (< (rand/double) 1/256) (rand-code this)
+                                  (< (rand/double) 1/2)   (:code pending)
                                   true                  0)
          :user-data         (rand-user-data this)
          :flags             flags
@@ -603,7 +568,7 @@
   (gen-new-transfer [this id]
     ; Single-phase transfers are roughly half pending, so in a perfect world
     ; we'd do second-phase transfers roughly 1/3 of the time.
-    (if (< (dg/double) 2/3)
+    (if (< (rand/double) 2/3)
       (gen-new-transfer-1 this id)
       (or (gen-new-transfer-2 this id)
           ; If that fails (e.g. because we don't think there's anything
@@ -631,31 +596,31 @@
     (let [flags (cond-> #{}
                   ; Mostly we want rcron; that way periodic reads will cover
                   ; more of the space.
-                  (< (dg/double) 9/10) (conj :reversed))
+                  (< (rand/double) 9/10) (conj :reversed))
           ; A pair of timestamps for min and max
           [t1 t2] (sort [(rand-timestamp this)
                          (rand-timestamp this)])]
       (cond-> {:flags flags
-               :limit (dg/long 1 32)}
-        (< (dg/double) 1/4)
+               :limit (rand/long 1 32)}
+        (< (rand/double) 1/4)
         (assoc :timestamp-min t1)
 
-        (< (dg/double) 1/4)
+        (< (rand/double) 1/4)
         (assoc :timestamp-max t2)
 
-        (< (dg/double) 1/8)
+        (< (rand/double) 1/8)
         (assoc :ledger (rand-ledger this))
 
         ; These are relatively unlikely to match, so we generate them
         ; infrequently.
-        (< (dg/double) 1/16)
+        (< (rand/double) 1/16)
         (assoc :code (rand-code this))
 
-        (< (dg/double) 1/16)
+        (< (rand/double) 1/16)
         (assoc :user-data (rand-user-data this)))))
 
   (gen-account-filter [this]
-    (let [flags (cond-> (condp < (dg/double)
+    (let [flags (cond-> (condp < (rand/double)
                           ; Very rarely, neither credits nor debits
                           0.99 #{}
                           ; Sometimes both
@@ -665,26 +630,26 @@
                           #{:debits})
                   ; Mostly we want rcron; that way periodic reads will cover
                   ; more of the space
-                  (< (dg/double) 9/10)
+                  (< (rand/double) 9/10)
                   (conj :reversed))
           ; A pair of timestamps we can use for min and max.
           [t1 t2] (sort [(rand-timestamp this)
                          (rand-timestamp this)])]
       (cond-> {:flags       flags
                :account-id  (rand-account-id this)
-               :limit       (dg/long 1 32)}
-        (< (dg/double) 1/4)
+               :limit       (rand/long 1 32)}
+        (< (rand/double) 1/4)
         (assoc :timestamp-min t1)
 
-        (< (dg/double) 1/4)
+        (< (rand/double) 1/4)
         (assoc :timestamp-max t2)
 
         ; These are relatively unlikely to match, so we generate them
         ; infrequently
-        (< (dg/double) 1/16)
+        (< (rand/double) 1/16)
         (assoc :user-data (rand-user-data this))
 
-        (< (dg/double) 1/16)
+        (< (rand/double) 1/16)
         (assoc :code (rand-code this)))))
 
   (add-new-accounts [this new-accounts]
@@ -987,7 +952,7 @@
 (defn rand-event-count
   "Generates a random number of events (e.g. for a single create-transfer op)"
   []
-  (if (< (dg/double) 0.01)
+  (if (< (rand/double) 0.01)
     0
     (inc (zipf 1.5 128))))
 
@@ -1120,7 +1085,7 @@
   (op [this test ctx]
     (when (pos? (b/size chunks))
       ; Pick a random pending chunk
-      (let [i    (rand-int (b/size chunks))
+      (let [i    (rand/long (b/size chunks))
             pair (b/nth chunks i)]
         [(gen/fill-in-op
            {:f f, :value (bm/value pair), :chunk-id (bm/key pair)}
