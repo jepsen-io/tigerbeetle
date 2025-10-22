@@ -15,14 +15,14 @@
             [clojure.data.generators :as dg]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [letr loopr]]
-            [jepsen [checker :as checker]
+            [jepsen [antithesis :as a]
+                    [checker :as checker]
                     [client :as client]
                     [generator :as gen]
                     [history :as h]
                     [random :as rand :refer [zipf zipf-default-skew]]
                     [util :refer [timeout nil-if-empty]]]
-            [jepsen.tigerbeetle [antithesis :as a]
-                                [core :refer :all]
+            [jepsen.tigerbeetle [core :refer :all]
                                 [checker :as tigerbeetle.checker]
                                 [client :as c]]
             [potemkin :refer [definterface+]]
@@ -38,7 +38,7 @@
                      node)))
 
   (setup! [this test]
-    (a/started!))
+    (a/setup-complete!))
 
   (invoke! [this test {:keys [f value] :as op}]
     (try+

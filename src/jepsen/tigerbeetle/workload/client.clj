@@ -77,12 +77,12 @@
      :value [transfer1 transfer2 ...]}"
   (:require [clojure.core.match :refer [match]]
             [clojure.tools.logging :refer [info warn]]
-            [jepsen [checker :as checker]
+            [jepsen [antithesis :as a]
+                    [checker :as checker]
                     [client :as client]
                     [generator :as gen]
                     [util :refer [timeout]]]
-            [jepsen.tigerbeetle [antithesis :as a]
-                                [client :as c]
+            [jepsen.tigerbeetle [client :as c]
                                 [checker :as tigerbeetle.checker]]
             [jepsen.tigerbeetle.workload [generator :refer [final-gen
                                                             gen
@@ -97,7 +97,7 @@
 
   (setup! [this test]
     ; Let Antithesis know we're running
-    (a/started!))
+    (a/setup-complete!))
 
   (invoke! [this test {:keys [f value] :as op}]
     (try+

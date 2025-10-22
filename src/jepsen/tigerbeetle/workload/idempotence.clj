@@ -16,9 +16,8 @@
             [jepsen [checker :as checker]
                     [generator :as gen]
                     [history :as h]
-                    [random :as rand]
-                    [util :refer [timeout zipf zipf-default-skew
-                                  nil-if-empty]]]
+                    [random :as rand :refer [zipf zipf-default-skew]]
+                    [util :refer [timeout nil-if-empty]]]
             [jepsen.tigerbeetle [core :refer :all]
                                 [checker :as tigerbeetle.checker]
                                 [lifecycle-map :as lm]]

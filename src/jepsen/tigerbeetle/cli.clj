@@ -4,7 +4,8 @@
   (:require [clojure [pprint :refer [pprint]]
                      [string :as str]]
             [clojure.tools.logging :refer [info warn]]
-            [jepsen [checker :as checker]
+            [jepsen [antithesis :as antithesis]
+                    [checker :as checker]
                     [cli :as cli]
                     [control :as control]
                     [generator :as gen]
@@ -13,8 +14,7 @@
                     [tests :as tests]
                     [util :as util]]
             [jepsen.control.scp :as scp]
-            [jepsen.tigerbeetle [antithesis :as antithesis]
-                                [client :as client]
+            [jepsen.tigerbeetle [client :as client]
                                 [checker :as tc]
                                 [core :refer [all-fs]]
                                 [db :as db]
@@ -460,7 +460,7 @@
   "Handles command line arguments. Can either run a test, or a web server for
   browsing results."
   [& args]
-  (antithesis/with-random
+  (antithesis/with-rng
     (cli/run! (merge (cli/single-test-cmd {:test-fn  tb-test
                                            :opt-fn opt-fn
                                            :opt-spec cli-opts})

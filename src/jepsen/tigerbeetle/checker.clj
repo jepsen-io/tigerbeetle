@@ -74,12 +74,12 @@
                   [rels :refer [ww wr rw]]
                   [txn]
                   [util :refer [nanos->secs]]]
-            [jepsen [checker :as checker]
+            [jepsen [antithesis :as a]
+                    [checker :as checker]
                     [history :as h]
                     [util :refer [meh]]]
             [jepsen.checker.perf :as perf]
-            [jepsen.tigerbeetle [antithesis :as a]
-                                [core :refer [bireduce
+            [jepsen.tigerbeetle [core :refer [bireduce
                                               write-fs
                                               read-fs
                                               read-account-fs

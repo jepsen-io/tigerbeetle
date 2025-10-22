@@ -85,7 +85,8 @@
         [op (WeightedMix. total-weight
                           weights
                           (assoc gens i gen')
-                          (long (rand/weighted-index total-weight weights)))]
+                          (rand/double-weighted-index
+                            total-weight weights))]
         ; Out of ops from this gen; compact and retry.
         (let [total-weight' (- total-weight (weights i))
               weights'      (-> weights
@@ -93,7 +94,7 @@
                                 (gen/dissoc-vec i)
                                 double-array)
               gens'         (gen/dissoc-vec gens i)
-              i'            (rand/weighted-index total-weight' weights')]
+              i'            (rand/double-weighted-index total-weight' weights')]
           (gen/op (WeightedMix. total-weight' weights' gens' i') test ctx)))))
 
   (update [this test ctx event]
@@ -117,7 +118,7 @@
           total-weight (reduce + weights)
           gens         (mapv second weight-gens)]
       (WeightedMix. total-weight weights gens
-                    (rand/weighted-index total-weight weights)))))
+                    (rand/double-weighted-index total-weight weights)))))
 
 (defn zipf-nth
   "Selects a random element from a Bifurcan collection with a Zipfian
@@ -135,7 +136,7 @@
   "Selects a random element from a vector of n Bifurcan collections. Uniformly
   distributed between collections, Zipfian within each collection."
   [xs not-found]
-  (let [i (rand-weighted-index (mapv b/size xs))]
+  (let [i (rand/double-weighted-index (double-array (mapv b/size xs)))]
     (if (= i -1)
       not-found
       (zipf-nth (nth xs i) not-found))))
